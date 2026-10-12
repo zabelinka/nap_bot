@@ -46,59 +46,58 @@ class Wake(TimePeriod):
     pass
 
 
-# @dataclass
-# class NapState:
-#     today_naps: list[Nap] = {}
-#     last_nap: Nap | None = None
-#     is_sleeping: boolean = False
-#     morning_wake: datetime | None = None
-#     # Message containing the current timer/status.
-#     # We edit this message instead of sending a new one.
-#     status_message_id: int | None = None
+@dataclass
+class ChatState:
+    # Message containing the current timer/status.
+    # We edit this message instead of sending a new one.
+    status_message_id: int | None = None
 
-#     # Temporary time being edited before starting sleep.
-#     pending_sleep_start: datetime | None = None
+    # Temporary time being edited before starting sleep.
+    pending_sleep_start: datetime | None = None
 
-#     # Message containing the time picker.
-#     time_picker_message_id: int | None = None
+    # Message containing the time picker.
+    time_picker_message_id: int | None = None
 
 # Storing wake periods instead of Naps for easier night transition calculation
-
 @dataclass
-class WakeState:
+class SleepState:
     today_wakes: list[Wake] = field(default_factory=list)
     last_wake: Wake | None = None
     morning_wake: datetime | None = None
 
-def is_awake(state: WakeState) -> boolean:
+def is_awake(state: SleepState) -> boolean:
     if state.today_wakes is None:
         return False
     if state.today_wakes[-1].end is None:
         return True
     return False
     
-def is_sleeping(state: WakeState) -> boolean:
+def is_sleeping(state: SleepState) -> boolean:
     return not is_awake(state)
 
 # For each date storing list of Wake periods
 # Key = Telegram chat_id
-CHAT_DATA: dict[int, dict[date, list[Wake]]] = {}
+SLEEP_DATA: dict[int, dict[date, list[Wake]]] = {}
+CHAT_DATA: dict[int, ChatState] = {}
 
-def set_chat_data(chat_data) :
-    CHAT_DATA = chat_data
 
-def get_state(chat_id: int) -> WakeState:
-    if chat_id not in CHAT_DATA:
+def get_sleep_state(chat_id: int) -> SleepState:
+    if chat_id not in SLEEP_DATA:
         return None     # TODO handle it better
 
     today = now().date()
-    today_wakes = CHAT_DATA.get(chat_id, {}).get(today, [])
+    today_wakes = SLEEP_DATA.get(chat_id, {}).get(today, [])
     if today_wakes:
         morning_wake = today_wakes[0].start
 
     last_wake = today_wakes[-1] if today_wakes else None
-    return WakeState(today_wakes = today_wakes, last_wake = last_wake, morning_wake = morning_wake)
+    return SleepState(today_wakes = today_wakes, last_wake = last_wake, morning_wake = morning_wake)
 
+def get_chat_state(chat_id: int) -> SleepState:
+    if chat_id not in CHAT_DATA:
+        CHAT_DATA[chat_id] = ChatState()
+
+    return CHAT_DATA[chat_id]
 
 # ============================================================
 # TIME HELPERS
@@ -134,11 +133,105 @@ def elapsed_since(start: datetime, end: datetime | None = None) -> timedelta:
 
     return max(timedelta(0), end - start)
 
+
+# ============================================================
+# KEYBOARDS
+# ============================================================
+
+def main_keyboard(state: SleepState) -> InlineKeyboardMarkup:
+
+    if state is None or is_awake(state):
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "😴 Start Sleep",
+                    callback_data="start_sleep_button",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "🔄 Refresh",
+                    callback_data="refresh",
+                )
+            ],
+        ])
+
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "⏹ Stop Sleep",
+                callback_data="stop_sleep",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🔄 Refresh",
+                callback_data="refresh",
+            )
+        ],
+    ])
+
+
+
+
+def time_picker_keyboard() -> InlineKeyboardMarkup:
+    """
+    Keyboard for adjusting the 'Now' time.
+
+    Example:
+        12:00
+        -5 min   +5 min
+        -1 min   +1 min
+        Done
+    """
+
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "−5 min",
+                callback_data="sleep_time:-5",
+            ),
+            InlineKeyboardButton(
+                "+5 min",
+                callback_data="sleep_time:+5",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "−1 min",
+                callback_data="sleep_time:-1",
+            ),
+            InlineKeyboardButton(
+                "+1 min",
+                callback_data="sleep_time:+1",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "✅ Start Sleep",
+                callback_data="confirm_sleep",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "❌ Cancel",
+                callback_data="cancel_sleep",
+            )
+        ],
+    ])
+
+
+
+
 # ============================================================
 # STATUS TEXT
 # ============================================================
 
-def build_status_text(state: WakeState) -> str:
+def build_status_text(state: SleepState) -> str:
+    if state is None :
+        return (
+        "👶 <b>No data registered</b>\n\n"
+        "Start tracking your baby sleep now!")
 
     if is_sleeping(state):
 
@@ -161,9 +254,26 @@ def build_status_text(state: WakeState) -> str:
     )
 
 
+# ============================================================
+# MESSAGES
+# ============================================================
+
+async def send_status(
+    chat_id: int,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    state = get_sleep_state(chat_id)
+
+    message = await context.bot.send_message(
+        chat_id=chat_id,
+        text=build_status_text(state),
+        parse_mode="HTML",
+        reply_markup=main_keyboard(state),
+    )
+
 
 # ============================================================
-# /start
+# START SLEEP
 # ============================================================
 
 async def start_command(
@@ -172,10 +282,75 @@ async def start_command(
 ):
 
     chat_id = update.effective_chat.id
-    state = get_state(chat_id)
 
-    # /start acts as a refresh when the user returns to the bot.
     await send_status(chat_id, context)
+
+async def start_sleep_command(update, context):
+    await show_time_picker(update.message)
+
+async def start_sleep_button(update, context):
+    query = update.callback_query
+    await query.answer()
+    await show_time_picker(query.message)
+
+
+def get_time_picker_text(selected_time: datetime):
+    return ("🕐 <b>When did the sleep start?</b>\n\n"
+            f"<b>{format_time(selected_time)}</b>\n\n"
+            "Adjust the time if needed:")
+
+
+async def show_time_picker(message):
+    chat_id = message.chat_id
+    state = get_sleep_state(chat_id)
+    chat_state = get_chat_state(chat_id)
+
+    if state is not None and is_sleeping(state):
+        print("Error. The sleep is already in progress")
+        # TODO show warning to user
+        return
+
+    # Start from current time.
+    chat_state.pending_sleep_start = now()
+
+    await message.reply_text(
+        text=(get_time_picker_text(chat_state.pending_sleep_start)),
+        parse_mode="HTML",
+        reply_markup=time_picker_keyboard(),
+    )
+
+    chat_state.time_picker_message_id = message.message_id
+
+
+async def adjust_sleep_time(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    query = update.callback_query
+    await query.answer()
+
+    chat_id = query.message.chat_id
+    state = get_chat_state(chat_id)
+
+    if state.pending_sleep_start is None:
+        return
+
+    # callback_data is:
+    # sleep_time:+1
+    # sleep_time:-5
+
+    _, amount = query.data.split(":")
+
+    minutes = int(amount)
+
+    state.pending_sleep_start += timedelta(minutes=minutes)
+
+    await query.edit_message_text(
+        text=(get_time_picker_text(state.pending_sleep_start)),
+        parse_mode="HTML",
+        reply_markup=time_picker_keyboard(),
+    )
 
 
 # ============================================================
@@ -194,6 +369,26 @@ def main():
     application.add_handler(
         CommandHandler("start", start_command)
     )
+
+    application.add_handler(
+        CommandHandler("start_sleep", start_sleep_command)
+    )
+
+    # Callback buttons
+    application.add_handler(
+        CallbackQueryHandler(
+            start_sleep_button,
+            pattern=r"^start_sleep_button$",
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            adjust_sleep_time,
+            pattern=r"^sleep_time:[+-]\d+$",
+        )
+    )
+
 
     print("Baby sleep tracker is running...")
 

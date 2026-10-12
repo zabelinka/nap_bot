@@ -6,7 +6,7 @@ def main():
 
     print("Testing bot functions here...")
 
-    bot.CHAT_DATA = {
+    bot.SLEEP_DATA = {
     123: {
             date(2026, 10, 9): [
                 bot.Wake(start=datetime(2026, 10, 9, 6, 0, tzinfo=TIMEZONE), end=datetime(2026, 10, 9, 9, 50, tzinfo=TIMEZONE)),
@@ -19,7 +19,7 @@ def main():
     }
 
     # print(bot.CHAT_DATA)
-    state : bot.WakeState = bot.get_state(123)
+    state : bot.SleepState = bot.get_sleep_state(123)
     print(state)
     print()
     print(bot.is_awake(state))
