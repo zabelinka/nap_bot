@@ -33,7 +33,7 @@ TIMEZONE = ZoneInfo("Europe/Stockholm")
 
 @dataclass
 class TimePeriod:
-    start: datetime
+    start: datetime | None = None
     end: datetime | None = None
 
 @dataclass
@@ -132,7 +132,7 @@ def format_time(dt: datetime) -> str:
 
 
 def format_period(period: TimePeriod) -> str:
-    start = format_time(period.start)
+    start = format_time(period.start) if period.start else "unknown"
     end = format_time(period.end) if period.end else "ongoing"
     return f"{start}–{end}"
 
@@ -153,17 +153,22 @@ def is_sleeping(state: SleepState) -> boolean:
     return not is_awake(state)
 
 
-def get_sleep_state(chat_id: int) -> SleepState:
+def get_sleep_data(chat_id: int) -> SleepData:
     if chat_id not in SLEEP_DATA:
         print(f"No sleep data for chat_id={chat_id}")
-        return None     # TODO handle it better
+        SLEEP_DATA[chat_id] = SleepData()
+    return SLEEP_DATA[chat_id]
+
+
+def get_sleep_state(chat_id: int) -> SleepState:
+    sleep_data =get_sleep_data(chat_id)  # Ensure sleep data exists for the chat_id
 
     today = now().date()
-    today_wakes = SLEEP_DATA.get(chat_id, {}).get(today, [])
+    today_wakes = sleep_data.get(today, [])
     morning_wake = today_wakes[0].start if today_wakes else None
-
     last_wake = today_wakes[-1] if today_wakes else None
     return SleepState(today_wakes = today_wakes, last_wake = last_wake, morning_wake = morning_wake)
+
 
 def get_chat_state(chat_id: int) -> SleepState:
     if chat_id not in CHAT_DATA:
@@ -171,6 +176,28 @@ def get_chat_state(chat_id: int) -> SleepState:
 
     return CHAT_DATA[chat_id]
 
+
+def track_sleep_start(chat_id: int, start_time: datetime):
+    sleep_data = get_sleep_data(chat_id)
+    today = start_time.date()
+
+    if today not in sleep_data:
+        sleep_data[today] = [Wake()]
+
+    # Use the sleep start time as the end time for the last wake period
+    if sleep_data[today]:
+        sleep_data[today][-1].end = start_time
+
+
+def track_sleep_end(chat_id: int, end_time: datetime):
+    sleep_data = get_sleep_data(chat_id)
+    today = end_time.date()
+
+    if today not in sleep_data:
+        sleep_data[today] = []
+
+    # Use the sleep end time as a start time for a new wake period
+    sleep_data[today].append(Wake(start=end_time, end=None))
 
 # ============================================================
 # KEYBOARDS
