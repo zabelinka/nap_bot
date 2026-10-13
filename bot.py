@@ -65,39 +65,36 @@ class SleepState:
     last_wake: Wake | None = None
     morning_wake: datetime | None = None
 
-def is_awake(state: SleepState) -> boolean:
-    if state.today_wakes is None:
-        return False
-    if state.today_wakes[-1].end is None:
-        return True
-    return False
-    
-def is_sleeping(state: SleepState) -> boolean:
-    return not is_awake(state)
+    def __str__(self) -> str:
+        wakes = ",\n    ".join(format_period(wake) for wake in self.today_wakes)
+        last_wake = format_period(self.last_wake) if self.last_wake else "None"
+        morning_wake = format_time(self.morning_wake) if self.morning_wake else "None"
+        return (
+            "SleepState(\n"
+            f"  today_wakes=[{wakes}],\n"
+            f"  last_wake={last_wake},\n"
+            f"  morning_wake={morning_wake}\n"
+            ")"
+        )
+
+
+class SleepData(dict[date, list[Wake]]):
+    def __str__(self) -> str:
+        if not self:
+            return "SleepData (empty)"
+
+        dates = []
+        for day, wakes in sorted(self.items()):
+            periods = ", ".join(format_period(wake) for wake in wakes) or "none"
+            dates.append(f"  {day.isoformat()}: [{periods}]")
+        return "SLEEP_DATA:\n" + "\n".join(dates)
+
 
 # For each date storing list of Wake periods
 # Key = Telegram chat_id
-SLEEP_DATA: dict[int, dict[date, list[Wake]]] = {}
+SLEEP_DATA: dict[int, SleepData] = {}
 CHAT_DATA: dict[int, ChatState] = {}
 
-
-def get_sleep_state(chat_id: int) -> SleepState:
-    if chat_id not in SLEEP_DATA:
-        return None     # TODO handle it better
-
-    today = now().date()
-    today_wakes = SLEEP_DATA.get(chat_id, {}).get(today, [])
-    if today_wakes:
-        morning_wake = today_wakes[0].start
-
-    last_wake = today_wakes[-1] if today_wakes else None
-    return SleepState(today_wakes = today_wakes, last_wake = last_wake, morning_wake = morning_wake)
-
-def get_chat_state(chat_id: int) -> SleepState:
-    if chat_id not in CHAT_DATA:
-        CHAT_DATA[chat_id] = ChatState()
-
-    return CHAT_DATA[chat_id]
 
 # ============================================================
 # TIME HELPERS
@@ -106,10 +103,6 @@ def get_chat_state(chat_id: int) -> SleepState:
 def now() -> datetime:
     """Current time in the bot's configured timezone."""
     return datetime.now(TIMEZONE)
-
-
-def format_time(dt: datetime) -> str:
-    return dt.strftime("%H:%M")
 
 
 def format_duration(delta: timedelta) -> str:
@@ -132,6 +125,51 @@ def elapsed_since(start: datetime, end: datetime | None = None) -> timedelta:
         end = now()
 
     return max(timedelta(0), end - start)
+
+
+def format_time(dt: datetime) -> str:
+    return dt.strftime("%H:%M")
+
+
+def format_period(period: TimePeriod) -> str:
+    start = format_time(period.start)
+    end = format_time(period.end) if period.end else "ongoing"
+    return f"{start}–{end}"
+
+
+# ============================================================
+# STATE HELPERS
+# ============================================================
+
+def is_awake(state: SleepState) -> boolean:
+    if state.today_wakes is None:
+        return False
+    if state.today_wakes[-1].end is None:
+        return True
+    return False
+
+
+def is_sleeping(state: SleepState) -> boolean:
+    return not is_awake(state)
+
+
+def get_sleep_state(chat_id: int) -> SleepState:
+    if chat_id not in SLEEP_DATA:
+        print(f"No sleep data for chat_id={chat_id}")
+        return None     # TODO handle it better
+
+    today = now().date()
+    today_wakes = SLEEP_DATA.get(chat_id, {}).get(today, [])
+    morning_wake = today_wakes[0].start if today_wakes else None
+
+    last_wake = today_wakes[-1] if today_wakes else None
+    return SleepState(today_wakes = today_wakes, last_wake = last_wake, morning_wake = morning_wake)
+
+def get_chat_state(chat_id: int) -> SleepState:
+    if chat_id not in CHAT_DATA:
+        CHAT_DATA[chat_id] = ChatState()
+
+    return CHAT_DATA[chat_id]
 
 
 # ============================================================

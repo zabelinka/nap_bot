@@ -6,19 +6,35 @@ def main():
 
     print("Testing bot functions here...")
 
+
+    # bot.SLEEP_DATA = {123: test_data}
+    # print(test_data)
+
+    # t = bot.SleepData()
+    # print(t)
+    today = date.today()
+    test_data = bot.SleepData({
+        today: [
+            bot.Wake(
+                start=datetime(today.year, today.month, today.day, 6, 0, tzinfo=TIMEZONE),
+                end=datetime(today.year, today.month, today.day, 9, 50, tzinfo=TIMEZONE),
+            ),
+            bot.Wake(
+                start=datetime(today.year, today.month, today.day, 11, 30, tzinfo=TIMEZONE),
+                end=datetime(today.year, today.month, today.day, 15, 30, tzinfo=TIMEZONE),
+            ),
+            bot.Wake(
+                start=datetime(today.year, today.month, today.day, 16, 0, tzinfo=TIMEZONE),
+                end=None,
+            ),
+        ]
+    })
+
     bot.SLEEP_DATA = {
-    123: {
-            date(2026, 10, 9): [
-                bot.Wake(start=datetime(2026, 10, 9, 6, 0, tzinfo=TIMEZONE), end=datetime(2026, 10, 9, 9, 50, tzinfo=TIMEZONE)),
-                bot.Wake(start=datetime(2026, 10, 9, 11, 30, tzinfo=TIMEZONE), end=datetime(2026, 10, 9, 15, 30, tzinfo=TIMEZONE)),
-            ],
-            date(2026, 10, 8): [
-                bot.Wake(start=datetime(2026, 10, 8, 6, 10), end=datetime(2026, 10, 8, 10, 0)),
-            ],
-        },
+        123: test_data
     }
 
-    # print(bot.CHAT_DATA)
+    print(bot.SLEEP_DATA[123])
     state : bot.SleepState = bot.get_sleep_state(123)
     print(state)
     print()
