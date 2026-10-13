@@ -172,8 +172,6 @@ def main_keyboard(state: SleepState) -> InlineKeyboardMarkup:
     ])
 
 
-
-
 def time_picker_keyboard() -> InlineKeyboardMarkup:
     """
     Keyboard for adjusting the 'Now' time.
@@ -219,8 +217,6 @@ def time_picker_keyboard() -> InlineKeyboardMarkup:
             )
         ],
     ])
-
-
 
 
 # ============================================================
@@ -271,6 +267,39 @@ async def send_status(
         reply_markup=main_keyboard(state),
     )
 
+
+
+async def edit_status(
+    chat_id: int,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """
+    Edit the existing status message.
+
+    No new Telegram message is created.
+    """
+
+    state = get_chat_state(chat_id)
+
+    if state.status_message_id is None:
+        await send_status(chat_id, context)
+        return
+
+    try:
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=state.status_message_id,
+            text=build_status_text(state),
+            parse_mode="HTML",
+            reply_markup=main_keyboard(state),
+        )
+
+    except Exception as e:
+        # The message might have been deleted.
+        # In that case create a new one.
+        print(f"Could not edit status message: {e}")
+
+        await send_status(chat_id, context)
 
 # ============================================================
 # START SLEEP
@@ -353,6 +382,57 @@ async def adjust_sleep_time(
     )
 
 
+async def confirm_sleep(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    query = update.callback_query
+    await query.answer()
+
+    chat_id = query.message.chat_id
+    chat_state = get_chat_state(chat_id)
+    sleep_state = get_sleep_state(chat_id)
+
+    if chat_state.pending_sleep_start is None:
+        return
+
+    start_time = chat_state.pending_sleep_start
+
+    # Create active nap.
+    # TODO update sleep_state with nap start time
+
+    # Clear temporary picker state.
+    chat_state.pending_sleep_start = None
+    chat_state.time_picker_message_id = None
+
+    # The picker message becomes the main status message. TODO ????
+    chat_state.status_message_id = query.message.message_id
+
+    await edit_status(chat_id, context)
+
+
+async def cancel_sleep(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    query = update.callback_query
+    await query.answer()
+
+    chat_id = query.message.chat_id
+    state = get_chat_state(chat_id)
+
+    state.pending_sleep_start = None
+    state.time_picker_message_id = None
+
+    state.status_message_id = query.message.message_id
+
+    await edit_status(chat_id, context)
+
+
+
+
 # ============================================================
 # MAIN
 # ============================================================
@@ -389,6 +469,19 @@ def main():
         )
     )
 
+    application.add_handler(
+        CallbackQueryHandler(
+            confirm_sleep,
+            pattern=r"^confirm_sleep$",
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            cancel_sleep,
+            pattern=r"^cancel_sleep$",
+        )
+    )
 
     print("Baby sleep tracker is running...")
 
