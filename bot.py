@@ -142,6 +142,8 @@ def format_period(period: TimePeriod) -> str:
 # ============================================================
 
 def is_awake(state: SleepState) -> boolean:
+    if state is None:
+        return True
     if state.today_wakes is None:
         return False
     if state.today_wakes[-1].end is None:
@@ -370,7 +372,7 @@ async def edit_status(
         await send_status(chat_id, context)
 
 # ============================================================
-# START SLEEP
+# TRACK SLEEP
 # ============================================================
 
 async def start_command(
@@ -383,16 +385,30 @@ async def start_command(
     await send_status(chat_id, context)
 
 async def start_sleep_command(update, context):
+    state = get_sleep_state(update.message.chat_id)
+    if state is not None and is_sleeping(state):
+        print("Error. The baby is already sleeping.")
+        # TODO show warning to user
+        return
+
     await show_time_picker(update.message)
 
 async def start_sleep_button(update, context):
+
     query = update.callback_query
+
+    state = get_sleep_state(query.message.chat_id)
+    if state is not None and is_sleeping(state):
+        print("Error. The baby is already sleeping.")
+        # TODO show warning to user
+        return
+
     await query.answer()
     await show_time_picker(query.message)
 
 
 def get_time_picker_text(selected_time: datetime):
-    return ("🕐 <b>When did the sleep start?</b>\n\n"
+    return ("🕐 <b>Set the time</b>\n\n"
             f"<b>{format_time(selected_time)}</b>\n\n"
             "Adjust the time if needed:")
 
@@ -401,11 +417,6 @@ async def show_time_picker(message):
     chat_id = message.chat_id
     state = get_sleep_state(chat_id)
     chat_state = get_chat_state(chat_id)
-
-    if state is not None and is_sleeping(state):
-        print("Error. The sleep is already in progress")
-        # TODO show warning to user
-        return
 
     # Start from current time.
     chat_state.pending_sleep_start = now()
@@ -468,7 +479,10 @@ async def confirm_sleep(
     start_time = chat_state.pending_sleep_start
 
     # Update sleep data
-    track_sleep_start(chat_id, start_time)
+    if sleep_state is None or is_awake(sleep_state):
+        track_sleep_start(chat_id, start_time)
+    else:
+        track_sleep_end(chat_id, start_time)
 
     # Clear temporary picker state
     chat_state.pending_sleep_start = None
@@ -499,6 +513,36 @@ async def cancel_sleep(
     await edit_status(chat_id, context)
 
 
+
+async def stop_sleep(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    query = update.callback_query
+
+    sleep_state = get_sleep_state(query.message.chat_id)
+
+    if is_awake(sleep_state):
+        print("Error. The baby is already awake.")
+        return
+    
+    await query.answer()
+    await show_time_picker(query.message)
+
+    # chat_id = query.message.chat_id
+    # chat_state = get_chat_state(chat_id)
+
+
+    # # TODO show timepicker
+
+    # stop_time = now()
+
+    # # Finish nap.
+    # track_sleep_end(chat_id, stop_time)
+
+
+    # await edit_status(chat_id, context)
 
 
 # ============================================================
@@ -548,6 +592,13 @@ def main():
         CallbackQueryHandler(
             cancel_sleep,
             pattern=r"^cancel_sleep$",
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            stop_sleep,
+            pattern=r"^stop_sleep$",
         )
     )
 
