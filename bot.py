@@ -215,12 +215,12 @@ def main_keyboard(state: SleepState) -> InlineKeyboardMarkup:
                     callback_data="start_sleep_button",
                 )
             ],
-            [
-                InlineKeyboardButton(
-                    "🔄 Refresh",
-                    callback_data="refresh",
-                )
-            ],
+            # [
+            #     InlineKeyboardButton(
+            #         "🔄 Refresh",
+            #         callback_data="refresh",
+            #     )
+            # ],
         ])
 
     return InlineKeyboardMarkup([
@@ -230,12 +230,12 @@ def main_keyboard(state: SleepState) -> InlineKeyboardMarkup:
                 callback_data="stop_sleep",
             )
         ],
-        [
-            InlineKeyboardButton(
-                "🔄 Refresh",
-                callback_data="refresh",
-            )
-        ],
+        # [
+        #     InlineKeyboardButton(
+        #         "🔄 Refresh",
+        #         callback_data="refresh",
+        #     )
+        # ],
     ])
 
 
