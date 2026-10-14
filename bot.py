@@ -161,7 +161,9 @@ def get_sleep_data(chat_id: int) -> SleepData:
 
 
 def get_sleep_state(chat_id: int) -> SleepState:
-    sleep_data =get_sleep_data(chat_id)  # Ensure sleep data exists for the chat_id
+    sleep_data = get_sleep_data(chat_id)
+    if not sleep_data:
+        return None
 
     today = now().date()
     today_wakes = sleep_data.get(today, [])
@@ -350,13 +352,14 @@ async def edit_status(
         await send_status(chat_id, context)
         return
 
+    sleep_state = get_sleep_state(chat_id)
     try:
         await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=state.status_message_id,
-            text=build_status_text(state),
+            text=build_status_text(sleep_state),
             parse_mode="HTML",
-            reply_markup=main_keyboard(state),
+            reply_markup=main_keyboard(sleep_state),
         )
 
     except Exception as e:
@@ -464,14 +467,14 @@ async def confirm_sleep(
 
     start_time = chat_state.pending_sleep_start
 
-    # Create active nap.
-    # TODO update sleep_state with nap start time
+    # Update sleep data
+    track_sleep_start(chat_id, start_time)
 
-    # Clear temporary picker state.
+    # Clear temporary picker state
     chat_state.pending_sleep_start = None
     chat_state.time_picker_message_id = None
 
-    # The picker message becomes the main status message. TODO ????
+    # The picker message becomes the main status message
     chat_state.status_message_id = query.message.message_id
 
     await edit_status(chat_id, context)
