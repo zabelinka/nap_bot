@@ -52,8 +52,8 @@ class ChatState:
     # We edit this message instead of sending a new one.
     status_message_id: int | None = None
 
-    # Temporary time being edited before starting sleep.
-    pending_sleep_start: datetime | None = None
+    # Temporary time being edited before starting sleep tracking
+    pending_sleep_time: datetime | None = None
 
     # Message containing the time picker.
     time_picker_message_id: int | None = None
@@ -255,34 +255,30 @@ def time_picker_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton(
-                "−5 min",
+                "− 5",
                 callback_data="sleep_time:-5",
             ),
             InlineKeyboardButton(
-                "+5 min",
+                "− 1",
+                callback_data="sleep_time:-1",
+            ),
+            InlineKeyboardButton(
+                "+ 1",
+                callback_data="sleep_time:+1",
+            ),
+            InlineKeyboardButton(
+                "+ 5",
                 callback_data="sleep_time:+5",
             ),
         ],
         [
             InlineKeyboardButton(
-                "−1 min",
-                callback_data="sleep_time:-1",
-            ),
-            InlineKeyboardButton(
-                "+1 min",
-                callback_data="sleep_time:+1",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "✅ Start Sleep",
-                callback_data="confirm_sleep",
-            )
-        ],
-        [
-            InlineKeyboardButton(
                 "❌ Cancel",
                 callback_data="cancel_sleep",
+            ),
+            InlineKeyboardButton(
+                "✅ Save",
+                callback_data="confirm_sleep",
             )
         ],
     ])
@@ -407,22 +403,28 @@ async def start_sleep_button(update, context):
     await show_time_picker(query.message)
 
 
-def get_time_picker_text(selected_time: datetime):
-    return ("🕐 <b>Set the time</b>\n\n"
+def get_time_picker_text(selected_time: datetime, sleep_state: SleepState | None):
+    if sleep_state is None or is_awake(sleep_state):
+        return ("🕐 <b>SLEEP START</b>\n\n"
+                f"<b>{format_time(selected_time)}</b>\n\n"
+                "Adjust the time if needed")
+
+
+    return ("🕐 <b>SLEEP END</b>\n\n"
             f"<b>{format_time(selected_time)}</b>\n\n"
-            "Adjust the time if needed:")
+            "Adjust the time if needed")
 
 
 async def show_time_picker(message):
     chat_id = message.chat_id
-    state = get_sleep_state(chat_id)
+    sleep_state = get_sleep_state(chat_id)
     chat_state = get_chat_state(chat_id)
 
     # Start from current time.
-    chat_state.pending_sleep_start = now()
+    chat_state.pending_sleep_time = now()
 
     await message.reply_text(
-        text=(get_time_picker_text(chat_state.pending_sleep_start)),
+        text=(get_time_picker_text(chat_state.pending_sleep_time, sleep_state)),
         parse_mode="HTML",
         reply_markup=time_picker_keyboard(),
     )
@@ -441,7 +443,7 @@ async def adjust_sleep_time(
     chat_id = query.message.chat_id
     state = get_chat_state(chat_id)
 
-    if state.pending_sleep_start is None:
+    if state.pending_sleep_time is None:
         return
 
     # callback_data is:
@@ -452,10 +454,11 @@ async def adjust_sleep_time(
 
     minutes = int(amount)
 
-    state.pending_sleep_start += timedelta(minutes=minutes)
+    state.pending_sleep_time += timedelta(minutes=minutes)
+    sleep_state = get_sleep_state(chat_id)
 
     await query.edit_message_text(
-        text=(get_time_picker_text(state.pending_sleep_start)),
+        text=(get_time_picker_text(state.pending_sleep_time, sleep_state)),
         parse_mode="HTML",
         reply_markup=time_picker_keyboard(),
     )
@@ -473,10 +476,10 @@ async def confirm_sleep(
     chat_state = get_chat_state(chat_id)
     sleep_state = get_sleep_state(chat_id)
 
-    if chat_state.pending_sleep_start is None:
+    if chat_state.pending_sleep_time is None:
         return
 
-    start_time = chat_state.pending_sleep_start
+    start_time = chat_state.pending_sleep_time
 
     # Update sleep data
     if sleep_state is None or is_awake(sleep_state):
@@ -485,7 +488,7 @@ async def confirm_sleep(
         track_sleep_end(chat_id, start_time)
 
     # Clear temporary picker state
-    chat_state.pending_sleep_start = None
+    chat_state.pending_sleep_time = None
     chat_state.time_picker_message_id = None
 
     # The picker message becomes the main status message
@@ -505,7 +508,7 @@ async def cancel_sleep(
     chat_id = query.message.chat_id
     state = get_chat_state(chat_id)
 
-    state.pending_sleep_start = None
+    state.pending_sleep_time = None
     state.time_picker_message_id = None
 
     state.status_message_id = query.message.message_id
