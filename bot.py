@@ -137,6 +137,29 @@ def format_period(period: TimePeriod) -> str:
     return f"{start}–{end}"
 
 
+def get_today_total_wake_duration(sleep_state: SleepState) -> timedelta:
+    total_duration = timedelta(0)
+    for wake in sleep_state.today_wakes:
+        if wake.start is not None:
+            total_duration += elapsed_since(wake.start, wake.end)
+    return total_duration
+
+
+def get_today_total_sleep_duration(sleep_state: SleepState) -> timedelta:
+    total_duration = timedelta(0)
+    wakes = sleep_state.today_wakes
+    for i in range(len(wakes) - 1):
+        wake = wakes[i]
+        next_wake = wakes[i + 1]
+        if wake.end is not None and next_wake.start is not None:
+            total_duration += elapsed_since(wake.end, next_wake.start)
+
+    # If the last wake has ended, add the duration from its end to now
+    if wakes and wakes[-1].end is not None:
+        total_duration += elapsed_since(wakes[-1].end)
+
+    return total_duration
+
 # ============================================================
 # STATE HELPERS
 # ============================================================
@@ -315,6 +338,34 @@ def build_status_text(state: SleepState) -> str:
     )
 
 
+def build_last_completed_period_text(state: SleepState) -> str:
+    if state is None or state.last_wake.start is None:
+        return ("No previous data recorded")
+
+    if is_sleeping(state):
+        # Build text about last wake window
+        wake: Wake = state.last_wake
+        duration = format_duration(elapsed_since(wake.start, wake.end))
+        total_duration = format_duration(get_today_total_wake_duration(state))
+
+        return (
+            "✅👶<b>Wake Window Completed</b>\n\n"
+            f"<b>{format_time(wake.start)} - {format_time(wake.end)} </b> ({duration})\n"
+            f"Total Wake for Today: <b>{total_duration}</b>\n\n"
+        )
+
+    # Awake. Build text about last nap
+    nap: Nap = Nap(start = state.today_wakes[-2].end, end = state.last_wake.start)
+    duration = format_duration(elapsed_since(nap.start, nap.end))
+    total_duration = format_duration(get_today_total_sleep_duration(state))
+
+    return (
+        "✅😴 <b>Nap Completed</b>\n\n"
+        f"<b>{format_time(nap.start)} - {format_time(nap.end)}</b> ({duration})\n"
+        f"Total Sleep for Today: <b>{total_duration}</b>\n\n"
+    )
+
+
 # ============================================================
 # MESSAGES
 # ============================================================
@@ -366,6 +417,38 @@ async def edit_status(
         print(f"Could not edit status message: {e}")
 
         await send_status(chat_id, context)
+
+
+async def show_last_completed_period(
+    chat_id: int,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """
+    Edit the existing status message with the last completed period (nap or wake)
+    """
+
+    state = get_chat_state(chat_id)
+
+    sleep_state = get_sleep_state(chat_id)
+    try:
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=state.status_message_id,
+            text=build_last_completed_period_text(sleep_state),
+            parse_mode="HTML"
+        )
+
+    except Exception as e:
+        # The message might have been deleted.
+        # In that case create a new one.
+        print(f"Could not edit status message: {e}")
+
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=build_last_completed_period_text(sleep_state),
+            parse_mode="HTML"
+        )
+
 
 # ============================================================
 # TRACK SLEEP
@@ -494,8 +577,11 @@ async def confirm_sleep(
     # The picker message becomes the main status message
     chat_state.status_message_id = query.message.message_id
 
-    await edit_status(chat_id, context)
+    # Update current message to show the last completed period
+    await show_last_completed_period(chat_id, context)
 
+    # Send a new message with a current ongoing period
+    await send_status(chat_id, context)
 
 async def cancel_sleep(
     update: Update,
