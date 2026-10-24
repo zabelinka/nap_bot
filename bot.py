@@ -49,7 +49,7 @@ class Wake(TimePeriod):
 @dataclass
 class ChatState:
     # Message containing the current timer/status.
-    # We edit this message instead of sending a new one.
+    # We edit this message to report a completed period (nap or wake)
     status_message_id: int | None = None
 
     # Temporary time being edited before starting sleep tracking
@@ -59,36 +59,23 @@ class ChatState:
 # Storing wake periods instead of Naps for easier night transition calculation
 @dataclass
 class SleepState:
-    today_wakes: list[Wake] = field(default_factory=list)
+    is_sleeping: bool = False
+    today_naps: list[Nap] = field(default_factory=list)
+    last_nap: Nap | None = None
     last_wake: Wake | None = None
-    morning_wake: datetime | None = None
-
-    def __str__(self) -> str:
-        wakes = ",\n    ".join(format_period(wake) for wake in self.today_wakes)
-        last_wake = format_period(self.last_wake) if self.last_wake else "None"
-        morning_wake = format_time(self.morning_wake) if self.morning_wake else "None"
-        return (
-            "SleepState(\n"
-            f"  today_wakes=[{wakes}],\n"
-            f"  last_wake={last_wake},\n"
-            f"  morning_wake={morning_wake}\n"
-            ")"
-        )
+    morning_start: datetime | None = None
 
 
-class SleepData(dict[date, list[Wake]]):
+# For each chat_id, we store a list of Naps
+class SleepData(list[Nap]):
     def __str__(self) -> str:
         if not self:
             return "SleepData (empty)"
 
-        dates = []
-        for day, wakes in sorted(self.items()):
-            periods = ", ".join(format_period(wake) for wake in wakes) or "none"
-            dates.append(f"  {day.isoformat()}: [{periods}]")
-        return "SLEEP_DATA:\n" + "\n".join(dates)
+        naps = ",\n  ".join(format_period(nap) for nap in self)
+        return f"SLEEP_DATA:\n  {naps}"
 
 
-# For each date storing list of Wake periods
 # Key = Telegram chat_id
 SLEEP_DATA: dict[int, SleepData] = {}
 CHAT_DATA: dict[int, ChatState] = {}
@@ -137,24 +124,19 @@ def format_period(period: TimePeriod) -> str:
 
 def get_today_total_wake_duration(sleep_state: SleepState) -> timedelta:
     total_duration = timedelta(0)
-    for wake in sleep_state.today_wakes:
-        if wake.start is not None:
-            total_duration += elapsed_since(wake.start, wake.end)
+
+    if sleep_state.morning_start:
+        total_duration = elapsed_since(sleep_state.morning_start)
+        total_duration -= get_today_total_sleep_duration(sleep_state)
+
     return total_duration
 
 
 def get_today_total_sleep_duration(sleep_state: SleepState) -> timedelta:
     total_duration = timedelta(0)
-    wakes = sleep_state.today_wakes
-    for i in range(len(wakes) - 1):
-        wake = wakes[i]
-        next_wake = wakes[i + 1]
-        if wake.end is not None and next_wake.start is not None:
-            total_duration += elapsed_since(wake.end, next_wake.start)
-
-    # If the last wake has ended, add the duration from its end to now
-    if wakes and wakes[-1].end is not None:
-        total_duration += elapsed_since(wakes[-1].end)
+    for nap in sleep_state.today_naps:
+        if nap.start is not None:
+            total_duration += elapsed_since(nap.start, nap.end)
 
     return total_duration
 
@@ -162,20 +144,7 @@ def get_today_total_sleep_duration(sleep_state: SleepState) -> timedelta:
 # STATE HELPERS
 # ============================================================
 
-def is_awake(state: SleepState) -> boolean:
-    if state is None:
-        return True
-    if state.today_wakes is None:
-        return False
-    if state.today_wakes[-1].end is None:
-        return True
-    return False
-
-
-def is_sleeping(state: SleepState) -> boolean:
-    return not is_awake(state)
-
-
+# returns list of naps for current user(chat_id)
 def get_sleep_data(chat_id: int) -> SleepData:
     if chat_id not in SLEEP_DATA:
         print(f"No sleep data for chat_id={chat_id}")
@@ -188,11 +157,42 @@ def get_sleep_state(chat_id: int) -> SleepState:
     if not sleep_data:
         return None
 
+    is_sleeping = sleep_data[-1].end is None
+    last_nap = sleep_data[-1]
+
+    last_wake_start = next(
+        (nap.end for nap in reversed(sleep_data[-2:]) if nap.end is not None),
+        None,
+    )
+    last_wake_end = last_nap.start if is_sleeping else None
+    last_wake = Wake(start=last_wake_start, end=last_wake_end)
+
     today = now().date()
-    today_wakes = sleep_data.get(today, [])
-    morning_wake = today_wakes[0].start if today_wakes else None
-    last_wake = today_wakes[-1] if today_wakes else None
-    return SleepState(today_wakes = today_wakes, last_wake = last_wake, morning_wake = morning_wake)
+
+    # TODO when loading data from SQL no need to go through all the days, stop when not today
+    today_naps = []
+    morning_start = None
+    for nap in reversed(sleep_data):
+        if nap.start is not None and nap.start.date() == today:
+            today_naps.append(nap)
+        elif (
+            nap.start is not None
+            and nap.start.date() != today
+            and nap.end is not None
+            and nap.end.date() == today
+        ):
+            morning_start = nap.end
+            break
+
+    today_naps.sort(key=lambda nap: nap.start)
+
+    return SleepState(
+        today_naps=today_naps,
+        is_sleeping=is_sleeping,
+        last_nap=last_nap,
+        last_wake=last_wake,
+        morning_start=morning_start,
+    )
 
 
 def get_chat_state(chat_id: int) -> SleepState:
@@ -204,25 +204,16 @@ def get_chat_state(chat_id: int) -> SleepState:
 
 def track_sleep_start(chat_id: int, start_time: datetime):
     sleep_data = get_sleep_data(chat_id)
-    today = start_time.date()
-
-    if today not in sleep_data:
-        sleep_data[today] = [Wake()]
-
-    # Use the sleep start time as the end time for the last wake period
-    if sleep_data[today]:
-        sleep_data[today][-1].end = start_time
+    sleep_data.append(Nap(start=start_time, end=None))
 
 
 def track_sleep_end(chat_id: int, end_time: datetime):
     sleep_data = get_sleep_data(chat_id)
-    today = end_time.date()
+    if not sleep_data or sleep_data[-1].end is not None:
+        print("Error: No ongoing sleep period to end.")
+        return
+    sleep_data[-1].end = end_time
 
-    if today not in sleep_data:
-        sleep_data[today] = []
-
-    # Use the sleep end time as a start time for a new wake period
-    sleep_data[today].append(Wake(start=end_time, end=None))
 
 # ============================================================
 # KEYBOARDS
@@ -230,7 +221,7 @@ def track_sleep_end(chat_id: int, end_time: datetime):
 
 def main_keyboard(state: SleepState) -> InlineKeyboardMarkup:
 
-    if state is None or is_awake(state):
+    if state is None or not state.is_sleeping:
         return InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(
@@ -315,23 +306,21 @@ def build_status_text(state: SleepState) -> str:
         "👶 <b>No data registered</b>\n\n"
         "Start tracking your baby sleep now!")
 
-    if is_sleeping(state):
-
-        nap: Nap = Nap(start = state.last_wake.end, end = None)
-        duration = format_duration(elapsed_since(nap.start))
+    last_nap: Nap = state.last_nap
+    if state.is_sleeping:
+        duration = format_duration(elapsed_since(last_nap.start))
 
         return (
             "😴 <b>Sleeping</b>\n\n"
-            f"Started: <b>{format_time(nap.start)}</b>\n"
+            f"Started: <b>{format_time(last_nap.start)}</b>\n"
             f"Duration: <b>{duration}</b>\n\n"
         )
 
-    wake = state.last_wake
-    duration = format_duration(elapsed_since(wake.start))
+    duration = format_duration(elapsed_since(last_nap.end))
 
     return (
         "👶 <b>Awake</b>\n\n"
-        f"Awake since: <b>{format_time(wake.start)}</b>\n"
+        f"Awake since: <b>{format_time(last_nap.end)}</b>\n"
         f"Wake time: <b>{duration}</b>\n\n"
     )
 
@@ -340,7 +329,7 @@ def build_last_completed_period_text(state: SleepState) -> str:
     if state is None or state.last_wake.start is None:
         return ("No previous data recorded")
 
-    if is_sleeping(state):
+    if state.is_sleeping:
         # Build text about last wake window
         wake: Wake = state.last_wake
         duration = format_duration(elapsed_since(wake.start, wake.end))
@@ -353,7 +342,7 @@ def build_last_completed_period_text(state: SleepState) -> str:
         )
 
     # Awake. Build text about last nap
-    nap: Nap = Nap(start = state.today_wakes[-2].end, end = state.last_wake.start)
+    nap: Nap = state.last_nap
     duration = format_duration(elapsed_since(nap.start, nap.end))
     total_duration = format_duration(get_today_total_sleep_duration(state))
 
@@ -428,22 +417,21 @@ async def show_last_completed_period(
     state = get_chat_state(chat_id)
 
     sleep_state = get_sleep_state(chat_id)
+    message_text = build_last_completed_period_text(sleep_state)
     try:
         await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=state.status_message_id,
-            text=build_last_completed_period_text(sleep_state),
+            text=message_text,
             parse_mode="HTML"
         )
 
     except Exception as e:
-        # The message might have been deleted.
-        # In that case create a new one.
         print(f"Could not edit status message: {e}")
 
         await context.bot.send_message(
             chat_id=chat_id,
-            text=build_last_completed_period_text(sleep_state),
+            text=message_text,
             parse_mode="HTML"
         )
 
@@ -463,7 +451,7 @@ async def start_command(
 
 async def start_sleep_command(update, context):
     state = get_sleep_state(update.message.chat_id)
-    if state is not None and is_sleeping(state):
+    if state is not None and state.is_sleeping:
         print("Error. The baby is already sleeping.")
         # TODO show warning to user
         return
@@ -476,7 +464,7 @@ async def start_sleep_button(update, context):
     chat_id = query.message.chat_id
 
     state = get_sleep_state(chat_id)
-    if state is not None and is_sleeping(state):
+    if state is not None and state.is_sleeping:
         print("Error. The baby is already sleeping.")
         # TODO show warning to user
         return
@@ -489,15 +477,17 @@ async def start_sleep_button(update, context):
 
 
 def get_time_picker_text(selected_time: datetime, sleep_state: SleepState | None):
-    if sleep_state is None or is_awake(sleep_state):
-        return ("🕐 <b>SLEEP START</b>\n\n"
+    if sleep_state is not None and sleep_state.is_sleeping:
+        return ("🕐 <b>SLEEP END</b>\n\n"
                 f"<b>{format_time(selected_time)}</b>\n\n"
                 "Adjust the time if needed")
 
-
-    return ("🕐 <b>SLEEP END</b>\n\n"
+    return ("🕐 <b>SLEEP START</b>\n\n"
             f"<b>{format_time(selected_time)}</b>\n\n"
             "Adjust the time if needed")
+
+
+
 
 
 async def show_time_picker(
@@ -577,7 +567,7 @@ async def confirm_sleep(
     start_time = chat_state.pending_sleep_time
 
     # Update sleep data
-    if sleep_state is None or is_awake(sleep_state):
+    if sleep_state is None or not sleep_state.is_sleeping:
         track_sleep_start(chat_id, start_time)
     else:
         track_sleep_end(chat_id, start_time)
@@ -624,7 +614,7 @@ async def stop_sleep(
     sleep_state = get_sleep_state(chat_id)
     chat_state = get_chat_state(chat_id)
 
-    if is_awake(sleep_state):
+    if not sleep_state.is_sleeping:
         print("Error. The baby is already awake.")
         return
 
