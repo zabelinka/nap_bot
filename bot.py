@@ -55,8 +55,6 @@ class ChatState:
     # Temporary time being edited before starting sleep tracking
     pending_sleep_time: datetime | None = None
 
-    # Message containing the time picker.
-    time_picker_message_id: int | None = None
 
 # Storing wake periods instead of Naps for easier night transition calculation
 @dataclass
@@ -470,20 +468,24 @@ async def start_sleep_command(update, context):
         # TODO show warning to user
         return
 
-    await show_time_picker(update.message)
+    await show_time_picker(update.message.chat_id, context)
 
 async def start_sleep_button(update, context):
 
     query = update.callback_query
+    chat_id = query.message.chat_id
 
-    state = get_sleep_state(query.message.chat_id)
+    state = get_sleep_state(chat_id)
     if state is not None and is_sleeping(state):
         print("Error. The baby is already sleeping.")
         # TODO show warning to user
         return
 
     await query.answer()
-    await show_time_picker(query.message)
+
+    chat_state = get_chat_state(chat_id)
+    chat_state.status_message_id = query.message.message_id
+    await show_time_picker(chat_id, context)
 
 
 def get_time_picker_text(selected_time: datetime, sleep_state: SleepState | None):
@@ -498,22 +500,32 @@ def get_time_picker_text(selected_time: datetime, sleep_state: SleepState | None
             "Adjust the time if needed")
 
 
-async def show_time_picker(message):
-    chat_id = message.chat_id
+async def show_time_picker(
+    chat_id: int,
+    context: ContextTypes.DEFAULT_TYPE
+):
     sleep_state = get_sleep_state(chat_id)
     chat_state = get_chat_state(chat_id)
 
     # Start from current time.
     chat_state.pending_sleep_time = now()
+    time_picker_text = get_time_picker_text(chat_state.pending_sleep_time, sleep_state)
 
-    await message.reply_text(
-        text=(get_time_picker_text(chat_state.pending_sleep_time, sleep_state)),
-        parse_mode="HTML",
-        reply_markup=time_picker_keyboard(),
-    )
-
-    chat_state.time_picker_message_id = message.message_id
-
+    try:
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=chat_state.status_message_id,
+            text=time_picker_text,
+            parse_mode="HTML",
+            reply_markup=time_picker_keyboard(),
+        )
+    except Exception as e:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=time_picker_text,
+            parse_mode="HTML",
+            reply_markup=time_picker_keyboard()
+        )
 
 async def adjust_sleep_time(
     update: Update,
@@ -572,13 +584,12 @@ async def confirm_sleep(
 
     # Clear temporary picker state
     chat_state.pending_sleep_time = None
-    chat_state.time_picker_message_id = None
-
-    # The picker message becomes the main status message
-    chat_state.status_message_id = query.message.message_id
 
     # Update current message to show the last completed period
+    chat_state.status_message_id = query.message.message_id
     await show_last_completed_period(chat_id, context)
+
+    chat_state.status_message_id = None
 
     # Send a new message with a current ongoing period
     await send_status(chat_id, context)
@@ -595,7 +606,6 @@ async def cancel_sleep(
     state = get_chat_state(chat_id)
 
     state.pending_sleep_time = None
-    state.time_picker_message_id = None
 
     state.status_message_id = query.message.message_id
 
@@ -610,28 +620,18 @@ async def stop_sleep(
 
     query = update.callback_query
 
-    sleep_state = get_sleep_state(query.message.chat_id)
+    chat_id = query.message.chat_id
+    sleep_state = get_sleep_state(chat_id)
+    chat_state = get_chat_state(chat_id)
 
     if is_awake(sleep_state):
         print("Error. The baby is already awake.")
         return
+
+    chat_state.status_message_id = query.message.message_id
     
     await query.answer()
-    await show_time_picker(query.message)
-
-    # chat_id = query.message.chat_id
-    # chat_state = get_chat_state(chat_id)
-
-
-    # # TODO show timepicker
-
-    # stop_time = now()
-
-    # # Finish nap.
-    # track_sleep_end(chat_id, stop_time)
-
-
-    # await edit_status(chat_id, context)
+    await show_time_picker(chat_id, context)
 
 
 # ============================================================
