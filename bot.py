@@ -225,31 +225,27 @@ def main_keyboard(state: SleepState) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(
+                    "🔄 Refresh",
+                    callback_data="refresh",
+                ),
+                InlineKeyboardButton(
                     "😴 Start Sleep",
                     callback_data="start_sleep_button",
                 )
             ],
-            # [
-            #     InlineKeyboardButton(
-            #         "🔄 Refresh",
-            #         callback_data="refresh",
-            #     )
-            # ],
         ])
 
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton(
+                "🔄 Refresh",
+                callback_data="refresh",
+            ),
+            InlineKeyboardButton(
                 "⏹ Stop Sleep",
                 callback_data="stop_sleep",
             )
         ],
-        # [
-        #     InlineKeyboardButton(
-        #         "🔄 Refresh",
-        #         callback_data="refresh",
-        #     )
-        # ],
     ])
 
 
@@ -265,6 +261,16 @@ def time_picker_keyboard() -> InlineKeyboardMarkup:
     """
 
     return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "− 30 min",
+                callback_data="sleep_time:-30",
+            ),
+            InlineKeyboardButton(
+                "+ 30 min",
+                callback_data="sleep_time:+30",
+            ),
+        ],
         [
             InlineKeyboardButton(
                 "− 5",
@@ -378,8 +384,6 @@ async def edit_status(
 ):
     """
     Edit the existing status message.
-
-    No new Telegram message is created.
     """
 
     state = get_chat_state(chat_id)
@@ -405,6 +409,19 @@ async def edit_status(
 
         await send_status(chat_id, context)
 
+async def refresh(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    query = update.callback_query
+    await query.answer()
+
+    chat_id = query.message.chat_id
+    state = get_chat_state(chat_id)
+    state.status_message_id = query.message.message_id
+
+    await edit_status(chat_id, context)
 
 async def show_last_completed_period(
     chat_id: int,
@@ -678,6 +695,13 @@ def main():
         CallbackQueryHandler(
             stop_sleep,
             pattern=r"^stop_sleep$",
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            refresh,
+            pattern=r"^refresh$",
         )
     )
 
