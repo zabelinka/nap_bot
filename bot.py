@@ -15,6 +15,8 @@ from telegram.ext import (
     ContextTypes,
 )
 
+import database as db
+
 
 # ============================================================
 # CONFIG
@@ -25,6 +27,13 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 # Sweden timezone.
 # Change this if your bot should use another timezone.
 TIMEZONE = ZoneInfo("Europe/Stockholm")
+
+async def post_init(app: Application) -> None:
+    await db.init_db()
+
+
+async def post_shutdown(app: Application) -> None:
+    await db.close_db()
 
 
 # ============================================================
@@ -40,23 +49,11 @@ class TimePeriod:
 class Nap(TimePeriod):
     pass
 
-
 @dataclass
 class Wake(TimePeriod):
     pass
 
 
-@dataclass
-class ChatState:
-    # Message containing the current timer/status.
-    # We edit this message to report a completed period (nap or wake)
-    status_message_id: int | None = None
-
-    # Temporary time being edited before starting sleep tracking
-    pending_sleep_time: datetime | None = None
-
-
-# Storing wake periods instead of Naps for easier night transition calculation
 @dataclass
 class SleepState:
     is_sleeping: bool = False
@@ -66,18 +63,17 @@ class SleepState:
     morning_start: datetime | None = None
 
 
-# For each chat_id, we store a list of Naps
-class SleepData(list[Nap]):
-    def __str__(self) -> str:
-        if not self:
-            return "SleepData (empty)"
+@dataclass
+class ChatState:
+    # Message to edit
+    status_message_id: int | None = None
 
-        naps = ",\n  ".join(format_period(nap) for nap in self)
-        return f"SLEEP_DATA:\n  {naps}"
+    # Temporary time being edited before starting sleep tracking
+    pending_sleep_time: datetime | None = None
 
 
 # Key = Telegram chat_id
-SLEEP_DATA: dict[int, SleepData] = {}
+SLEEP_DATA: dict[int, SleepState] = {}
 CHAT_DATA: dict[int, ChatState] = {}
 
 
@@ -144,24 +140,20 @@ def get_today_total_sleep_duration(sleep_state: SleepState) -> timedelta:
 # STATE HELPERS
 # ============================================================
 
-# returns list of naps for current user(chat_id)
-def get_sleep_data(chat_id: int) -> SleepData:
-    if chat_id not in SLEEP_DATA:
-        print(f"No sleep data for chat_id={chat_id}")
-        SLEEP_DATA[chat_id] = SleepData()
-    return SLEEP_DATA[chat_id]
+# retrieves data from database and builds SleepState object
+async def refresh_sleep_data(chat_id: int):
+    rows = await db.get_today_or_open_naps(chat_id)
+    naps: list[Nap] = [Nap(start, end) for start, end in rows]
 
+    if not naps:
+        SLEEP_DATA[chat_id] = None
+        return
 
-def get_sleep_state(chat_id: int) -> SleepState:
-    sleep_data = get_sleep_data(chat_id)
-    if not sleep_data:
-        return None
-
-    is_sleeping = sleep_data[-1].end is None
-    last_nap = sleep_data[-1]
+    is_sleeping = naps[-1].end is None
+    last_nap = naps[-1]
 
     last_wake_start = next(
-        (nap.end for nap in reversed(sleep_data[-2:]) if nap.end is not None),
+        (nap.end for nap in reversed(naps[-2:]) if nap.end is not None),
         None,
     )
     last_wake_end = last_nap.start if is_sleeping else None
@@ -169,50 +161,41 @@ def get_sleep_state(chat_id: int) -> SleepState:
 
     today = now().date()
 
-    # TODO when loading data from SQL no need to go through all the days, stop when not today
-    today_naps = []
     morning_start = None
-    for nap in reversed(sleep_data):
-        if nap.start is not None and nap.start.date() == today:
-            today_naps.append(nap)
-        elif (
-            nap.start is not None
-            and nap.start.date() != today
-            and nap.end is not None
-            and nap.end.date() == today
-        ):
-            morning_start = nap.end
-            break
+    if naps[0].start is not None and naps[0].start.date() != today:
+        # Remove night sleep that started on a previous day
+        morning_start = naps[0].end
+        naps.remove(naps[0])
 
-    today_naps.sort(key=lambda nap: nap.start)
-
-    return SleepState(
-        today_naps=today_naps,
+    SLEEP_DATA[chat_id] = SleepState(
+        today_naps=naps,
         is_sleeping=is_sleeping,
         last_nap=last_nap,
         last_wake=last_wake,
         morning_start=morning_start,
     )
 
+# returns saved sleep state if exists or retrieves data from database 
+async def get_sleep_state(chat_id: int) -> SleepState:
+    if chat_id not in SLEEP_DATA:
+        await refresh_sleep_data(chat_id)
+    return SLEEP_DATA[chat_id]
 
-def get_chat_state(chat_id: int) -> SleepState:
+
+def get_chat_state(chat_id: int) -> ChatState:
     if chat_id not in CHAT_DATA:
         CHAT_DATA[chat_id] = ChatState()
-
     return CHAT_DATA[chat_id]
 
 
-def track_sleep_start(chat_id: int, start_time: datetime):
-    sleep_data = get_sleep_data(chat_id)
-    sleep_data.append(Nap(start=start_time, end=None))
+async def track_sleep_start(chat_id: int, start_time: datetime):
+    nap_id = await db.add_nap(chat_id, start_time.replace(second=0, microsecond=0))
+    await refresh_sleep_data(chat_id)  # refresh local state
 
 
-def track_sleep_end(chat_id: int, end_time: datetime):
-    sleep_data = get_sleep_data(chat_id)
-    if not sleep_data or sleep_data[-1].end is not None:
-        print("Error: No ongoing sleep period to end.")
-        return
-    sleep_data[-1].end = end_time
+async def track_sleep_end(chat_id: int, end_time: datetime):
+    nap_id = await db.end_nap(chat_id, end_time.replace(second=0, microsecond=0))
+    await refresh_sleep_data(chat_id)  # refresh local state
 
 
 # ============================================================
@@ -367,7 +350,7 @@ async def send_status(
     chat_id: int,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    state = get_sleep_state(chat_id)
+    state = await get_sleep_state(chat_id)
 
     message = await context.bot.send_message(
         chat_id=chat_id,
@@ -375,7 +358,6 @@ async def send_status(
         parse_mode="HTML",
         reply_markup=main_keyboard(state),
     )
-
 
 
 async def edit_status(
@@ -392,7 +374,7 @@ async def edit_status(
         await send_status(chat_id, context)
         return
 
-    sleep_state = get_sleep_state(chat_id)
+    sleep_state = await get_sleep_state(chat_id)
     try:
         await context.bot.edit_message_text(
             chat_id=chat_id,
@@ -409,6 +391,7 @@ async def edit_status(
 
         await send_status(chat_id, context)
 
+
 async def refresh(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -423,6 +406,7 @@ async def refresh(
 
     await edit_status(chat_id, context)
 
+
 async def show_last_completed_period(
     chat_id: int,
     context: ContextTypes.DEFAULT_TYPE,
@@ -433,7 +417,7 @@ async def show_last_completed_period(
 
     state = get_chat_state(chat_id)
 
-    sleep_state = get_sleep_state(chat_id)
+    sleep_state = await get_sleep_state(chat_id)
     message_text = build_last_completed_period_text(sleep_state)
     try:
         await context.bot.edit_message_text(
@@ -461,27 +445,26 @@ async def start_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-
     chat_id = update.effective_chat.id
-
     await send_status(chat_id, context)
 
+
 async def start_sleep_command(update, context):
-    state = get_sleep_state(update.message.chat_id)
-    if state is not None and state.is_sleeping:
+    sleep_state = await get_sleep_state(update.message.chat_id)
+    if sleep_state is not None and sleep_state.is_sleeping:
         print("Error. The baby is already sleeping.")
         # TODO show warning to user
         return
 
     await show_time_picker(update.message.chat_id, context)
 
-async def start_sleep_button(update, context):
 
+async def start_sleep_button(update, context):
     query = update.callback_query
     chat_id = query.message.chat_id
 
-    state = get_sleep_state(chat_id)
-    if state is not None and state.is_sleeping:
+    sleep_state = await get_sleep_state(chat_id)
+    if sleep_state is not None and sleep_state.is_sleeping:
         print("Error. The baby is already sleeping.")
         # TODO show warning to user
         return
@@ -504,19 +487,19 @@ def get_time_picker_text(selected_time: datetime, sleep_state: SleepState | None
             "Adjust the time if needed")
 
 
-
-
-
 async def show_time_picker(
     chat_id: int,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
-    sleep_state = get_sleep_state(chat_id)
+    sleep_state = await get_sleep_state(chat_id)
     chat_state = get_chat_state(chat_id)
 
     # Start from current time.
     chat_state.pending_sleep_time = now()
-    time_picker_text = get_time_picker_text(chat_state.pending_sleep_time, sleep_state)
+    time_picker_text = get_time_picker_text(
+        chat_state.pending_sleep_time,
+        sleep_state,
+    )
 
     try:
         await context.bot.edit_message_text(
@@ -531,8 +514,9 @@ async def show_time_picker(
             chat_id=chat_id,
             text=time_picker_text,
             parse_mode="HTML",
-            reply_markup=time_picker_keyboard()
+            reply_markup=time_picker_keyboard(),
         )
+
 
 async def adjust_sleep_time(
     update: Update,
@@ -543,9 +527,9 @@ async def adjust_sleep_time(
     await query.answer()
 
     chat_id = query.message.chat_id
-    state = get_chat_state(chat_id)
+    chat_state = get_chat_state(chat_id)
 
-    if state.pending_sleep_time is None:
+    if chat_state.pending_sleep_time is None:
         return
 
     # callback_data is:
@@ -556,11 +540,11 @@ async def adjust_sleep_time(
 
     minutes = int(amount)
 
-    state.pending_sleep_time += timedelta(minutes=minutes)
-    sleep_state = get_sleep_state(chat_id)
+    chat_state.pending_sleep_time += timedelta(minutes=minutes)
+    sleep_state = await get_sleep_state(chat_id)
 
     await query.edit_message_text(
-        text=(get_time_picker_text(state.pending_sleep_time, sleep_state)),
+        text=(get_time_picker_text(chat_state.pending_sleep_time, sleep_state)),
         parse_mode="HTML",
         reply_markup=time_picker_keyboard(),
     )
@@ -576,7 +560,7 @@ async def confirm_sleep(
 
     chat_id = query.message.chat_id
     chat_state = get_chat_state(chat_id)
-    sleep_state = get_sleep_state(chat_id)
+    sleep_state = await get_sleep_state(chat_id)
 
     if chat_state.pending_sleep_time is None:
         return
@@ -585,9 +569,9 @@ async def confirm_sleep(
 
     # Update sleep data
     if sleep_state is None or not sleep_state.is_sleeping:
-        track_sleep_start(chat_id, start_time)
+        await track_sleep_start(chat_id, start_time)
     else:
-        track_sleep_end(chat_id, start_time)
+        await track_sleep_end(chat_id, start_time)
 
     # Clear temporary picker state
     chat_state.pending_sleep_time = None
@@ -595,11 +579,12 @@ async def confirm_sleep(
     # Update current message to show the last completed period
     chat_state.status_message_id = query.message.message_id
     await show_last_completed_period(chat_id, context)
-
+    
     chat_state.status_message_id = None
 
     # Send a new message with a current ongoing period
     await send_status(chat_id, context)
+
 
 async def cancel_sleep(
     update: Update,
@@ -619,16 +604,14 @@ async def cancel_sleep(
     await edit_status(chat_id, context)
 
 
-
 async def stop_sleep(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-
     query = update.callback_query
 
     chat_id = query.message.chat_id
-    sleep_state = get_sleep_state(chat_id)
+    sleep_state = await get_sleep_state(chat_id)
     chat_state = get_chat_state(chat_id)
 
     if not sleep_state.is_sleeping:
@@ -650,6 +633,8 @@ def main():
     application = (
         Application.builder()
         .token(BOT_TOKEN)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
         .build()
     )
 
