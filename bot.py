@@ -119,11 +119,16 @@ def format_period(period: TimePeriod) -> str:
 
 
 def get_today_total_wake_duration(sleep_state: SleepState) -> timedelta:
+    if sleep_state.morning_start is None and not sleep_state.today_naps:
+        return timedelta(0)
+
     total_duration = timedelta(0)
 
-    if sleep_state.morning_start:
-        total_duration = elapsed_since(sleep_state.morning_start)
-        total_duration -= get_today_total_sleep_duration(sleep_state)
+    # if there is no morning_start, count from first nap end
+    starting_moment = sleep_state.morning_start or sleep_state.today_naps[0].end
+
+    total_duration = elapsed_since(starting_moment)
+    total_duration -= get_today_total_sleep_duration(sleep_state)
 
     return total_duration
 
