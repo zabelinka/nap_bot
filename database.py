@@ -2,10 +2,8 @@ import os
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from dotenv import load_dotenv
 from psycopg_pool import AsyncConnectionPool
 
-load_dotenv()  # reads .env locally; on Railway the variable is already set
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 
