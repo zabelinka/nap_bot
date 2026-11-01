@@ -1,2 +1,2 @@
 python-telegram-bot[job-queue]==22.7
-psycopg2-binary
+psycopg[binary,pool]
