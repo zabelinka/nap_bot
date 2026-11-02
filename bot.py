@@ -148,7 +148,13 @@ def get_today_total_sleep_duration(sleep_state: SleepState) -> timedelta:
 # retrieves data from database and builds SleepState object
 async def refresh_sleep_data(chat_id: int):
     rows = await db.get_today_or_open_naps(chat_id)
-    naps: list[Nap] = [Nap(start, end) for start, end in rows]
+    naps: list[Nap] = [
+        Nap(
+            start.astimezone(TIMEZONE),
+            end.astimezone(TIMEZONE) if end is not None else None,
+        )
+        for start, end in rows
+    ]
 
     if not naps:
         SLEEP_DATA[chat_id] = None
