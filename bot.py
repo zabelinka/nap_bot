@@ -1,3 +1,4 @@
+from enum import Enum
 import os
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -40,6 +41,11 @@ async def post_shutdown(app: Application) -> None:
 # DATA STRUCTURES
 # ============================================================
 
+class Operation(Enum):
+    StartSleep = "StartSleep"
+    StopSleep = "StopSleep"
+    WakeWindowUpdate = "WakeWindowUpdate"
+
 @dataclass
 class TimePeriod:
     start: datetime | None = None
@@ -71,9 +77,12 @@ class ChatState:
     # Temporary time being edited before starting sleep tracking
     pending_sleep_time: datetime | None = None
 
+    pending_operation: Operation | None = None
+
 
 # Key = Telegram chat_id
 SLEEP_DATA: dict[int, SleepState] = {}
+WAKE_DATA: dict[int, list[timedelta]] = {}
 CHAT_DATA: dict[int, ChatState] = {}
 
 
@@ -99,6 +108,15 @@ def format_duration(delta: timedelta) -> str:
     minutes = total_minutes % 60
 
     return f"{hours:02d}:{minutes:02d}"
+
+
+def format_window(window: timedelta) -> str:
+    total_minutes = max(0, int(window.total_seconds() // 60))
+
+    hours = total_minutes // 60
+    minutes = total_minutes % 60
+
+    return f"{hours}h{minutes}min" if hours > 0 else f"{minutes}min"
 
 
 def elapsed_since(start: datetime, end: datetime | None = None) -> timedelta:
@@ -191,6 +209,12 @@ async def get_sleep_state(chat_id: int) -> SleepState:
     if chat_id not in SLEEP_DATA:
         await refresh_sleep_data(chat_id)
     return SLEEP_DATA[chat_id]
+
+
+def get_wake_data(chat_id: int) -> list[timedelta]:
+    if chat_id not in WAKE_DATA:
+        WAKE_DATA[chat_id] = []
+    return WAKE_DATA[chat_id]
 
 
 def get_chat_state(chat_id: int) -> ChatState:
@@ -292,6 +316,17 @@ def time_picker_keyboard() -> InlineKeyboardMarkup:
                 "✅ Save",
                 callback_data="confirm_sleep",
             )
+        ],
+    ])
+
+
+def settings_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "Set wake windows",
+                callback_data="set_wake_windows",
+            ),
         ],
     ])
 
@@ -461,13 +496,18 @@ async def start_command(
 
 
 async def start_sleep_command(update, context):
-    sleep_state = await get_sleep_state(update.message.chat_id)
+    chat_id = update.message.chat_id
+    sleep_state = await get_sleep_state(chat_id)
     if sleep_state is not None and sleep_state.is_sleeping:
         print("Error. The baby is already sleeping.")
         # TODO show warning to user
         return
 
-    await show_time_picker(update.message.chat_id, context)
+    chat_state = get_chat_state(chat_id)
+    chat_state.pending_operation = Operation.StartSleep
+    chat_state.pending_sleep_time = now()
+
+    await show_time_picker(chat_id, context)
 
 
 async def start_sleep_button(update, context):
@@ -481,35 +521,41 @@ async def start_sleep_button(update, context):
         return
 
     await query.answer()
-
     chat_state = get_chat_state(chat_id)
-    chat_state.status_message_id = query.message.message_id
+    chat_state.pending_operation = Operation.StartSleep
+    chat_state.pending_sleep_time = now()
+
     await show_time_picker(chat_id, context)
 
 
-def get_time_picker_text(selected_time: datetime, sleep_state: SleepState | None):
-    if sleep_state is not None and sleep_state.is_sleeping:
+def get_time_picker_text(chat_id: int, selected_time: datetime):
+    operation = get_chat_state(chat_id).pending_operation
+    if operation == Operation.StopSleep:
         return ("🕐 <b>SLEEP END</b>\n\n"
                 f"<b>{format_time(selected_time)}</b>\n\n"
                 "Adjust the time if needed")
 
-    return ("🕐 <b>SLEEP START</b>\n\n"
-            f"<b>{format_time(selected_time)}</b>\n\n"
-            "Adjust the time if needed")
+    if operation == Operation.StartSleep:
+        return ("🕐 <b>SLEEP START</b>\n\n"
+                f"<b>{format_time(selected_time)}</b>\n\n"
+                "Adjust the time if needed")
+
+    if operation == Operation.WakeWindowUpdate:
+        return ("🕐 <b>SET WAKE WINDOW</b>\n\n"
+                f"<b>{format_time(selected_time)}</b>\n\n"
+                "Adjust the duration with buttons below")
 
 
 async def show_time_picker(
     chat_id: int,
     context: ContextTypes.DEFAULT_TYPE,
+
 ):
-    sleep_state = await get_sleep_state(chat_id)
     chat_state = get_chat_state(chat_id)
 
-    # Start from current time.
-    chat_state.pending_sleep_time = now()
     time_picker_text = get_time_picker_text(
+        chat_id,
         chat_state.pending_sleep_time,
-        sleep_state,
     )
 
     try:
@@ -521,6 +567,7 @@ async def show_time_picker(
             reply_markup=time_picker_keyboard(),
         )
     except Exception as e:
+        print(f"Could not edit status message: {e}")
         await context.bot.send_message(
             chat_id=chat_id,
             text=time_picker_text,
@@ -550,12 +597,10 @@ async def adjust_sleep_time(
     _, amount = query.data.split(":")
 
     minutes = int(amount)
-
     chat_state.pending_sleep_time += timedelta(minutes=minutes)
-    sleep_state = await get_sleep_state(chat_id)
 
     await query.edit_message_text(
-        text=(get_time_picker_text(chat_state.pending_sleep_time, sleep_state)),
+        text=(get_time_picker_text(chat_id, chat_state.pending_sleep_time)),
         parse_mode="HTML",
         reply_markup=time_picker_keyboard(),
     )
@@ -571,14 +616,30 @@ async def confirm_sleep(
 
     chat_id = query.message.chat_id
     chat_state = get_chat_state(chat_id)
-    sleep_state = await get_sleep_state(chat_id)
 
     if chat_state.pending_sleep_time is None:
+        return
+
+    if chat_state.pending_operation == Operation.WakeWindowUpdate:
+        wake_window = timedelta(
+            hours=chat_state.pending_sleep_time.hour,
+            minutes=chat_state.pending_sleep_time.minute,
+        )
+        if wake_window > timedelta(minutes=0):
+            wake_windows = get_wake_data(chat_id)
+            wake_windows.append(wake_window)
+            await db.set_wake_windows(chat_id, wake_windows)
+
+        chat_state.pending_sleep_time = None
+        chat_state.pending_operation = None
+
+        await set_wake_windows(update, context)
         return
 
     start_time = chat_state.pending_sleep_time
 
     # Update sleep data
+    sleep_state = await get_sleep_state(chat_id)
     if sleep_state is None or not sleep_state.is_sleeping:
         await track_sleep_start(chat_id, start_time)
     else:
@@ -592,6 +653,8 @@ async def confirm_sleep(
     await show_last_completed_period(chat_id, context)
     
     chat_state.status_message_id = None
+    chat_state.pending_sleep_time = None
+    chat_state.pending_operation = None
 
     # Send a new message with a current ongoing period
     await send_status(chat_id, context)
@@ -606,11 +669,18 @@ async def cancel_sleep(
     await query.answer()
 
     chat_id = query.message.chat_id
-    state = get_chat_state(chat_id)
+    chat_state = get_chat_state(chat_id)
 
-    state.pending_sleep_time = None
+    if chat_state.pending_operation == Operation.WakeWindowUpdate:
+        chat_state.pending_sleep_time = None
+        chat_state.pending_operation = None
 
-    state.status_message_id = query.message.message_id
+        await set_wake_windows(update, context)
+        return
+
+    chat_state.status_message_id = query.message.message_id
+    chat_state.pending_sleep_time = None
+    chat_state.pending_operation = None
 
     await edit_status(chat_id, context)
 
@@ -630,10 +700,73 @@ async def stop_sleep(
         return
 
     chat_state.status_message_id = query.message.message_id
-    
+    chat_state.pending_operation = Operation.StopSleep
+    chat_state.pending_sleep_time = now()
+
     await query.answer()
     await show_time_picker(chat_id, context)
 
+
+# ============================================================
+# SETTINGS
+# ============================================================
+
+async def settings_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    chat_id = update.effective_chat.id
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="<b>Settings</b>",
+        parse_mode="HTML",
+        reply_markup=settings_keyboard(),
+    )
+
+
+async def set_wake_windows(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    query = update.callback_query
+    await query.answer()
+
+    chat_id = query.message.chat_id
+
+    windows = await db.get_wake_windows(chat_id)
+    WAKE_DATA[chat_id] = windows
+
+    keyboard = [
+        [InlineKeyboardButton(f"{i+1}: {format_window(w)}", callback_data=f"wake:{i}")]
+        for i, w in enumerate(windows)
+    ]
+    keyboard.append([InlineKeyboardButton("➕ Add Wake Window", callback_data="wake:add")])
+
+    await query.edit_message_text(
+        text="<b>Wake Windows</b>\n\n"
+             "Tap the wake window to edit or add a new one.\n\n",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+async def add_wake_window(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    query = update.callback_query
+    await query.answer()
+
+    chat_id = query.message.chat_id
+
+    chat_state = get_chat_state(chat_id)
+    chat_state.pending_sleep_time = datetime.now(TIMEZONE).replace(
+        hour=0, minute=0, second=0, microsecond=0,
+    )
+    chat_state.pending_operation = Operation.WakeWindowUpdate
+    chat_state.status_message_id = query.message.message_id
+
+    await show_time_picker(chat_id, context)
 
 # ============================================================
 # MAIN
@@ -656,6 +789,10 @@ def main():
 
     application.add_handler(
         CommandHandler("start_sleep", start_sleep_command)
+    )
+
+    application.add_handler(
+        CommandHandler("settings", settings_command)
     )
 
     # Callback buttons
@@ -698,6 +835,20 @@ def main():
         CallbackQueryHandler(
             refresh,
             pattern=r"^refresh$",
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            set_wake_windows,
+            pattern=r"^set_wake_windows$",
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            add_wake_window,
+            pattern=r"^wake:add$",
         )
     )
 

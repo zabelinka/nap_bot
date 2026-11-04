@@ -32,6 +32,22 @@ async def init_db() -> None:
         )
 
 
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS wake_windows (
+                id         SERIAL PRIMARY KEY,
+                baby_id    INTEGER NOT NULL,
+                windows    INTERVAL[] NOT NULL DEFAULT '{}'
+            );
+            """
+        )
+
+        await conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_wake_windows_baby "
+            "ON wake_windows (baby_id);"
+        )
+
+
 async def close_db() -> None:
     await pool.close()
 
@@ -70,7 +86,6 @@ async def end_nap(baby_id: int, end_time: datetime) -> tuple | None:
         return await cur.fetchone()  # None if there was no open nap
 
 
-
 async def get_today_or_open_naps(baby_id: int) -> list[tuple[datetime, datetime | None]]:
     """Naps that ended today (local time) or have no end time yet."""
     today = datetime.now(TIMEZONE).date()
@@ -106,3 +121,26 @@ async def get_last_nap(baby_id: int):
             (baby_id,),
         )
         return await cur.fetchone()  # None if there are no naps yet
+
+
+async def get_wake_windows(baby_id: int) -> list[timedelta] | None:
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT windows FROM wake_windows WHERE baby_id = %s;",
+            (baby_id,),
+        )
+        row = await cur.fetchone()
+        return row[0] if row else []
+
+
+async def set_wake_windows(baby_id: int, windows: list[timedelta]) -> None:
+    async with pool.connection() as conn:
+        await conn.execute(
+            """
+            INSERT INTO wake_windows (baby_id, windows)
+            VALUES (%s, %s::interval[])
+            ON CONFLICT (baby_id)
+            DO UPDATE SET windows = EXCLUDED.windows;
+            """,
+            (baby_id, windows),
+        )
