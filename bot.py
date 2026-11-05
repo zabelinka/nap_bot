@@ -80,9 +80,15 @@ class ChatState:
     pending_operation: Operation | None = None
 
 
+@dataclass
+class WakeWindowDraft:
+    windows: list[timedelta]
+    modified_index: int | None   # None = adding a new window
+
+
 # Key = Telegram chat_id
 SLEEP_DATA: dict[int, SleepState] = {}
-WAKE_DATA: dict[int, list[timedelta]] = {}
+WAKE_DATA: dict[int, WakeWindowDraft] = {}
 CHAT_DATA: dict[int, ChatState] = {}
 
 
@@ -628,9 +634,13 @@ async def confirm_sleep(
             minutes=chat_state.pending_sleep_time.minute,
         )
         if wake_window > timedelta(minutes=0):
-            wake_windows = get_wake_data(chat_id)
-            wake_windows.append(wake_window)
-            await db.set_wake_windows(chat_id, wake_windows)
+            window_draft = get_wake_data(chat_id)
+            if window_draft.modified_index is not None:
+                # Update existing wake window
+                window_draft.windows[window_draft.modified_index] = wake_window
+            else:
+                window_draft.windows.append(wake_window)
+            await db.set_wake_windows(chat_id, window_draft.windows)
 
         chat_state.pending_sleep_time = None
         chat_state.pending_operation = None
@@ -736,7 +746,7 @@ async def set_wake_windows(
     chat_id = query.message.chat_id
 
     windows = await db.get_wake_windows(chat_id)
-    WAKE_DATA[chat_id] = windows
+    WAKE_DATA[chat_id] = WakeWindowDraft(windows=windows, modified_index=None)
 
     keyboard = [
         [InlineKeyboardButton(f"{i+1}: {format_window(w)}", callback_data=f"wake:{i}")]
@@ -750,6 +760,34 @@ async def set_wake_windows(
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
+
+
+async def edit_wake_window(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    query = update.callback_query
+    await query.answer()
+
+    index = int(query.data.split(":")[1])
+
+    chat_id = query.message.chat_id
+    window_draft = get_wake_data(chat_id)
+    window_draft.modified_index = index
+    windows = window_draft.windows
+
+    initial_time = windows[index] if index < len(windows) else timedelta(minutes=0)
+
+    chat_state = get_chat_state(chat_id)
+    chat_state.pending_sleep_time =  datetime.now(TIMEZONE).replace(
+        hour=int(initial_time.total_seconds() // 3600),
+        minute=int(initial_time.total_seconds() % 3600 // 60),
+        second=0, microsecond=0,
+    )
+    chat_state.pending_operation = Operation.WakeWindowUpdate
+    chat_state.status_message_id = query.message.message_id
+
+    await show_time_picker(chat_id, context)
 
 
 async def add_wake_window(
@@ -769,6 +807,7 @@ async def add_wake_window(
     chat_state.status_message_id = query.message.message_id
 
     await show_time_picker(chat_id, context)
+
 
 # ============================================================
 # MAIN
@@ -851,6 +890,13 @@ def main():
         CallbackQueryHandler(
             add_wake_window,
             pattern=r"^wake:add$",
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            edit_wake_window,
+            pattern=r"^wake:\d+$",
         )
     )
 
