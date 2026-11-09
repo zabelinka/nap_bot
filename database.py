@@ -36,10 +36,9 @@ async def init_db() -> None:
                 expires_at TIMESTAMPTZ NOT NULL
             );
 
-            
             CREATE TABLE IF NOT EXISTS naps (
                 id         SERIAL PRIMARY KEY,
-                baby_id    INTEGER NOT NULL,
+                baby_id    BIGINT NOT NULL REFERENCES babies (baby_id) ON DELETE CASCADE,
                 start_time TIMESTAMPTZ NOT NULL,
                 end_time   TIMESTAMPTZ,
                 CHECK (end_time IS NULL OR end_time > start_time)
@@ -48,11 +47,11 @@ async def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS wake_windows (
                 id         SERIAL PRIMARY KEY,
-                baby_id    INTEGER NOT NULL,
+                baby_id    BIGINT PRIMARY KEY REFERENCES babies (baby_id) ON DELETE CASCADE,
                 windows    INTERVAL[] NOT NULL DEFAULT '{}'
             );
             CREATE UNIQUE INDEX IF NOT EXISTS idx_wake_windows_baby ON wake_windows (baby_id);
-            
+
             """
         )
 
