@@ -60,41 +60,44 @@ async def close_db() -> None:
     await pool.close()
 
 
-async def add_nap(baby_id: int, start_time: datetime, end_time: datetime | None = None) -> int:
+async def add_nap(chat_id: int, start_time: datetime, end_time: datetime | None = None) -> int:
     async with pool.connection() as conn:
         cur = await conn.execute(
             """
             INSERT INTO naps (baby_id, start_time, end_time)
-            VALUES (%s, %s, %s)
+            SELECT baby_id, %s, %s
+            FROM baby_chats
+            WHERE chat_id = %s
             RETURNING id;
             """,
-            (baby_id, start_time, end_time),
+            (start_time, end_time, chat_id),
         )
         row = await cur.fetchone()
         return row[0]
 
 
-async def end_nap(baby_id: int, end_time: datetime) -> tuple | None:
+async def end_nap(chat_id: int, end_time: datetime) -> tuple | None:
     async with pool.connection() as conn:
         cur = await conn.execute(
             """
             UPDATE naps
             SET end_time = %s
             WHERE id = (
-                SELECT id
-                FROM naps
-                WHERE baby_id = %s AND end_time IS NULL
-                ORDER BY start_time DESC
+                SELECT n.id
+                FROM naps n
+                JOIN baby_chats bc ON bc.baby_id = n.baby_id
+                WHERE bc.chat_id = %s AND n.end_time IS NULL
+                ORDER BY n.start_time DESC
                 LIMIT 1
             )
             RETURNING id, start_time, end_time;
             """,
-            (end_time, baby_id),
+            (end_time, chat_id),
         )
         return await cur.fetchone()  # None if there was no open nap
 
 
-async def get_today_or_open_naps(baby_id: int) -> list[tuple[datetime, datetime | None]]:
+async def get_today_or_open_naps(chat_id: int) -> list[tuple[datetime, datetime | None]]:
     """Naps that ended today (local time) or have no end time yet."""
     today = datetime.now(TIMEZONE).date()
     day_start = datetime.combine(today, time.min, tzinfo=TIMEZONE)
@@ -102,55 +105,45 @@ async def get_today_or_open_naps(baby_id: int) -> list[tuple[datetime, datetime 
     async with pool.connection() as conn:
         cur = await conn.execute(
             """
-            SELECT start_time, end_time
-            FROM naps
-            WHERE baby_id = %s
-                AND (
-                    end_time IS NULL
-                    OR (end_time >= %s)
-                    )
-            ORDER BY start_time;
+            SELECT n.start_time, n.end_time
+            FROM naps n
+            JOIN baby_chats bc ON bc.baby_id = n.baby_id
+            WHERE bc.chat_id = %s
+              AND (n.end_time IS NULL OR n.end_time >= %s)
+            ORDER BY n.start_time;
             """,
-            (baby_id, day_start),
+            (chat_id, day_start),
         )
         return await cur.fetchall()
 
 
-async def get_last_nap(baby_id: int):
+async def get_wake_windows(chat_id: int) -> list[timedelta] | None:
     async with pool.connection() as conn:
         cur = await conn.execute(
             """
-            SELECT id, baby_id, start_time, end_time
-            FROM naps
-            WHERE baby_id = %s
-            ORDER BY start_time DESC
-            LIMIT 1;
+            SELECT ww.windows
+            FROM wake_windows ww
+            JOIN baby_chats bc ON bc.baby_id = ww.baby_id
+            WHERE bc.chat_id = %s;
             """,
-            (baby_id,),
-        )
-        return await cur.fetchone()  # None if there are no naps yet
-
-
-async def get_wake_windows(baby_id: int) -> list[timedelta] | None:
-    async with pool.connection() as conn:
-        cur = await conn.execute(
-            "SELECT windows FROM wake_windows WHERE baby_id = %s;",
-            (baby_id,),
+            (chat_id,),
         )
         row = await cur.fetchone()
         return row[0] if row else []
 
 
-async def set_wake_windows(baby_id: int, windows: list[timedelta]) -> None:
+async def set_wake_windows(chat_id: int, windows: list[timedelta]) -> None:
     async with pool.connection() as conn:
         await conn.execute(
             """
             INSERT INTO wake_windows (baby_id, windows)
-            VALUES (%s, %s::interval[])
+            SELECT baby_id, %s::interval[]
+            FROM baby_chats
+            WHERE chat_id = %s
             ON CONFLICT (baby_id)
             DO UPDATE SET windows = EXCLUDED.windows;
             """,
-            (baby_id, windows),
+            (windows, chat_id),
         )
 
 
