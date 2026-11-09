@@ -344,7 +344,8 @@ def settings_keyboard() -> InlineKeyboardMarkup:
 def build_status_text(state: SleepState) -> str:
     if state is None :
         return (
-        "👶 <b>No data registered</b>\n\n"
+        "👶 <b>This chat is linked to a baby profile.</b>\n\n"
+        "No data recorded yet.\n"
         "Start tracking your baby sleep now!")
 
     last_nap: Nap = state.last_nap
@@ -500,7 +501,17 @@ async def start_command(
     context: ContextTypes.DEFAULT_TYPE,
 ):
     chat_id = update.effective_chat.id
-    await send_status(chat_id, context)
+
+    if await db.get_baby_id(chat_id) is None:
+        await update.message.reply_text(
+            "No baby profile found.\n\n"
+            "Please set up a baby profile first, or use /join CODE to join an existing profile",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Setup a new baby profile", callback_data="setup_baby_profile")]
+            ]),
+        )
+    else:
+        await send_status(chat_id, context)
 
 
 async def start_sleep_command(update, context):
@@ -811,6 +822,62 @@ async def add_wake_window(
 
 
 # ============================================================
+# INVITATIONS
+# ============================================================
+
+async def setup_baby_profile(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    chat_id = update.effective_chat.id
+    await db.create_baby(chat_id)
+    await send_status(chat_id, context)
+
+
+async def invite(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    baby_id = await db.get_baby_id(update.effective_chat.id)
+    if baby_id is None:
+        await update.message.reply_text(
+            "No baby profile found.\n\n"
+            "Please set up a baby profile first, or use /join CODE to join an existing profile."
+        )
+        return
+
+    code = await db.create_invite(baby_id)
+    await update.message.reply_text(
+        f"Invite code: <code>{code}</code>\n"
+        "Valid for 24 hours, one use. In the other chat, send:\n"
+        f"<code>/join {code}</code>",
+        parse_mode="HTML",
+    )
+
+
+async def join(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if not context.args:
+        await update.message.reply_text("Usage: /join CODE. Use the invitation code from another user.")
+        return
+
+    if await db.get_baby_id(chat_id) is not None:
+        await update.message.reply_text("This chat is already linked to a baby.")
+        return
+
+    # basic brute-force protection: 5 bad attempts per chat
+    attempts = context.chat_data.get("join_failures", 0)
+    if attempts >= 5:
+        await update.message.reply_text("Too many failed attempts. Try again later.")
+        return
+
+    code = context.args[0].strip().upper()
+    if await db.redeem_invite(chat_id, code) is None:
+        context.chat_data["join_failures"] = attempts + 1
+        await update.message.reply_text("Invalid or expired code.")
+        return
+
+    context.chat_data.pop("join_failures", None)
+    await update.message.reply_text("Joined ✅ \n\nYou now share the same baby data.")
+
+
+# ============================================================
 # MAIN
 # ============================================================
 
@@ -825,17 +892,11 @@ def main():
     )
 
     # Commands
-    application.add_handler(
-        CommandHandler("start", start_command)
-    )
-
-    application.add_handler(
-        CommandHandler("start_sleep", start_sleep_command)
-    )
-
-    application.add_handler(
-        CommandHandler("settings", settings_command)
-    )
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("start_sleep", start_sleep_command))
+    application.add_handler(CommandHandler("settings", settings_command))
+    application.add_handler(CommandHandler("invite", invite))
+    application.add_handler(CommandHandler("join", join))
 
     # Callback buttons
     application.add_handler(
@@ -898,6 +959,13 @@ def main():
         CallbackQueryHandler(
             edit_wake_window,
             pattern=r"^wake:\d+$",
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            setup_baby_profile,
+            pattern=r"^setup_baby_profile$",
         )
     )
 
