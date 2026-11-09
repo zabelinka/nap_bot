@@ -18,6 +18,25 @@ async def init_db() -> None:
     async with pool.connection() as conn:
         await conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS babies (
+                baby_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY
+            );
+
+            
+            CREATE TABLE IF NOT EXISTS baby_chats (
+                chat_id BIGINT PRIMARY KEY,   -- a chat belongs to exactly one baby
+                baby_id BIGINT NOT NULL REFERENCES babies (baby_id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_baby_chats_baby_id ON baby_chats (baby_id);
+
+            
+            CREATE TABLE IF NOT EXISTS baby_invites (
+                code       TEXT PRIMARY KEY,
+                baby_id    BIGINT NOT NULL REFERENCES babies (baby_id) ON DELETE CASCADE,
+                expires_at TIMESTAMPTZ NOT NULL
+            );
+
+            
             CREATE TABLE IF NOT EXISTS naps (
                 id         SERIAL PRIMARY KEY,
                 baby_id    INTEGER NOT NULL,
@@ -25,46 +44,15 @@ async def init_db() -> None:
                 end_time   TIMESTAMPTZ,
                 CHECK (end_time IS NULL OR end_time > start_time)
             );
-            """
-        )
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_naps_baby_start "
-            "ON naps (baby_id, start_time DESC);"
-        )
+            CREATE INDEX IF NOT EXISTS idx_naps_baby_start ON naps (baby_id, start_time DESC);
 
-
-        await conn.execute(
-            """
             CREATE TABLE IF NOT EXISTS wake_windows (
                 id         SERIAL PRIMARY KEY,
                 baby_id    INTEGER NOT NULL,
                 windows    INTERVAL[] NOT NULL DEFAULT '{}'
             );
-            """
-        )
-
-        await conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_wake_windows_baby "
-            "ON wake_windows (baby_id);"
-        )
-
-        await conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS babies (
-                baby_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY
-            );
-
-            CREATE TABLE IF NOT EXISTS baby_chats (
-                chat_id BIGINT PRIMARY KEY,   -- a chat belongs to exactly one baby
-                baby_id BIGINT NOT NULL REFERENCES babies (baby_id) ON DELETE CASCADE
-            );
-            CREATE INDEX IF NOT EXISTS idx_baby_chats_baby_id ON baby_chats (baby_id);
-
-            CREATE TABLE IF NOT EXISTS baby_invites (
-                code       TEXT PRIMARY KEY,
-                baby_id    BIGINT NOT NULL REFERENCES babies (baby_id) ON DELETE CASCADE,
-                expires_at TIMESTAMPTZ NOT NULL
-            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_wake_windows_baby ON wake_windows (baby_id);
+            
             """
         )
 
