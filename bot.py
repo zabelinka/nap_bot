@@ -532,6 +532,7 @@ async def start_sleep_button(update, context):
     chat_state = get_chat_state(chat_id)
     chat_state.pending_operation = Operation.StartSleep
     chat_state.pending_sleep_time = now()
+    chat_state.status_message_id = query.message.message_id
 
     await show_time_picker(chat_id, context)
 
