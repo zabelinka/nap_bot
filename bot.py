@@ -211,8 +211,8 @@ async def refresh_sleep_data(chat_id: int):
     )
 
 # returns saved sleep state if exists or retrieves data from database 
-async def get_sleep_state(chat_id: int) -> SleepState:
-    if chat_id not in SLEEP_DATA:
+async def get_sleep_state(chat_id: int, refresh: bool = False) -> SleepState:
+    if refresh or chat_id not in SLEEP_DATA:
         await refresh_sleep_data(chat_id)
     return SLEEP_DATA[chat_id]
 
@@ -405,7 +405,7 @@ async def send_status(
     chat_id: int,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    state = await get_sleep_state(chat_id)
+    state = await get_sleep_state(chat_id, True)
 
     message = await context.bot.send_message(
         chat_id=chat_id,
@@ -429,7 +429,7 @@ async def edit_status(
         await send_status(chat_id, context)
         return
 
-    sleep_state = await get_sleep_state(chat_id)
+    sleep_state = await get_sleep_state(chat_id, True)
     try:
         await context.bot.edit_message_text(
             chat_id=chat_id,
@@ -516,7 +516,7 @@ async def start_command(
 
 async def start_sleep_command(update, context):
     chat_id = update.message.chat_id
-    sleep_state = await get_sleep_state(chat_id)
+    sleep_state = await get_sleep_state(chat_id, True)
     if sleep_state is not None and sleep_state.is_sleeping:
         print("Error. The baby is already sleeping.")
         # TODO show warning to user
@@ -533,7 +533,7 @@ async def start_sleep_button(update, context):
     query = update.callback_query
     chat_id = query.message.chat_id
 
-    sleep_state = await get_sleep_state(chat_id)
+    sleep_state = await get_sleep_state(chat_id, True)
     if sleep_state is not None and sleep_state.is_sleeping:
         print("Error. The baby is already sleeping.")
         # TODO show warning to user
@@ -716,7 +716,7 @@ async def stop_sleep(
     query = update.callback_query
 
     chat_id = query.message.chat_id
-    sleep_state = await get_sleep_state(chat_id)
+    sleep_state = await get_sleep_state(chat_id, True)
     chat_state = get_chat_state(chat_id)
 
     if not sleep_state.is_sleeping:
