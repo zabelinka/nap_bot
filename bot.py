@@ -390,11 +390,14 @@ def build_last_completed_period_text(state: SleepState) -> str:
     duration = format_duration(elapsed_since(nap.start, nap.end))
     total_duration = format_duration(get_today_total_sleep_duration(state))
 
-    return (
+    text = (
         "🌚 <b>Sleep</b>\n\n"
         f"<b>{format_time(nap.start)} - {format_time(nap.end)}</b>   ({duration})\n\n"
-        f"Total Sleep for Today: <b>{total_duration}</b>\n\n"
     )
+
+    if total_duration != "00:00":
+        text += f"Total Sleep for Today: <b>{total_duration}</b>\n\n"
+    return text
 
 
 # ============================================================
