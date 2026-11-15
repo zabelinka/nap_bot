@@ -353,8 +353,8 @@ def build_status_text(state: SleepState) -> str:
         duration = format_duration(elapsed_since(last_nap.start))
 
         return (
-            "😴 <b>Sleeping</b>\n\n"
-            f"Started: <b>{format_time(last_nap.start)}</b>\n"
+            "😴 <b>SLEEPING</b>\n\n"
+            f"Since: <b>{format_time(last_nap.start)}</b>\n"
             f"Duration: <b>{duration}</b>\n\n"
         )
 
@@ -362,9 +362,9 @@ def build_status_text(state: SleepState) -> str:
     total_duration = format_duration(get_today_total_wake_duration(state))
 
     return (
-        "👶 <b>Awake</b>\n\n"
-        f"Awake since: <b>{format_time(last_nap.end)}</b>\n"
-        f"Wake time: <b>{duration}</b>\n\n"
+        "😜 <b>AWAKE</b>\n\n"
+        f"Since: <b>{format_time(last_nap.end)}</b>\n"
+        f"Duration: <b>{duration}</b>\n\n"
         f"Total Wake for Today: <b>{total_duration}</b>\n\n"
     )
 
@@ -380,8 +380,8 @@ def build_last_completed_period_text(state: SleepState) -> str:
         total_duration = format_duration(get_today_total_wake_duration(state))
 
         return (
-            "✅👶<b>Wake Window Completed</b>\n\n"
-            f"<b>{format_time(wake.start)} - {format_time(wake.end)} </b> ({duration})\n"
+            "🌞 <b>Wake Window</b>\n\n"
+            f"<b>{format_time(wake.start)} - {format_time(wake.end)}</b>   ({duration})\n\n"
             f"Total Wake for Today: <b>{total_duration}</b>\n\n"
         )
 
@@ -391,8 +391,8 @@ def build_last_completed_period_text(state: SleepState) -> str:
     total_duration = format_duration(get_today_total_sleep_duration(state))
 
     return (
-        "✅😴 <b>Nap Completed</b>\n\n"
-        f"<b>{format_time(nap.start)} - {format_time(nap.end)}</b> ({duration})\n"
+        "🌚 <b>Sleep</b>\n\n"
+        f"<b>{format_time(nap.start)} - {format_time(nap.end)}</b>   ({duration})\n\n"
         f"Total Sleep for Today: <b>{total_duration}</b>\n\n"
     )
 
