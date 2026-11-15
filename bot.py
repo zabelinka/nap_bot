@@ -674,14 +674,18 @@ async def confirm_sleep(
 
     # Update current message to show the last completed period
     chat_state.status_message_id = query.message.message_id
-    await show_last_completed_period(chat_id, context)
+
+    all_chats = await db.get_linked_chats(chat_id)
+    for chat in all_chats:
+        await show_last_completed_period(chat, context)
     
     chat_state.status_message_id = None
     chat_state.pending_sleep_time = None
     chat_state.pending_operation = None
 
     # Send a new message with a current ongoing period
-    await send_status(chat_id, context)
+    for chat in all_chats:
+        await send_status(chat, context)
 
 
 async def cancel_sleep(

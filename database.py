@@ -117,6 +117,23 @@ async def get_today_or_open_naps(chat_id: int) -> list[tuple[datetime, datetime 
         return await cur.fetchall()
 
 
+async def get_linked_chats(chat_id: int) -> list[int]:
+    """All chat_ids linked to the same baby as the given chat (including itself)"""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            """
+            SELECT other.chat_id
+            FROM baby_chats me
+            JOIN baby_chats other ON other.baby_id = me.baby_id
+            WHERE me.chat_id = %s
+            ORDER BY other.chat_id;
+            """,
+            (chat_id,),
+        )
+        rows = await cur.fetchall()
+        return [row[0] for row in rows]
+
+
 async def get_wake_windows(chat_id: int) -> list[timedelta] | None:
     async with pool.connection() as conn:
         cur = await conn.execute(
