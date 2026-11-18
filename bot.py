@@ -349,23 +349,22 @@ def build_status_text(state: SleepState) -> str:
         "Start tracking your baby sleep now!")
 
     last_nap: Nap = state.last_nap
+    total_wake = format_duration(get_today_total_wake_duration(state))
+    total_sleep = format_duration(get_today_total_sleep_duration(state))
+
     if state.is_sleeping:
         duration = format_duration(elapsed_since(last_nap.start))
-
-        return (
-            "😴 <b>SLEEPING</b>\n\n"
-            f"Since: <b>{format_time(last_nap.start)}</b>\n"
-            f"Duration: <b>{duration}</b>\n\n"
-        )
-
-    duration = format_duration(elapsed_since(last_nap.end))
-    total_duration = format_duration(get_today_total_wake_duration(state))
+        title = "😴 <b>SLEEPING</b>"
+    else:
+        duration = format_duration(elapsed_since(last_nap.end))
+        title = "😜 <b>AWAKE</b>"
 
     return (
-        "😜 <b>AWAKE</b>\n\n"
-        f"Since: <b>{format_time(last_nap.end)}</b>\n"
+        f"{title}\n\n"
+        f"Since: <b>{format_time(last_nap.start)}</b>\n"
         f"Duration: <b>{duration}</b>\n\n"
-        f"Total Wake for Today: <b>{total_duration}</b>\n\n"
+        f"Total Wake for Today: <b>{total_wake}</b>\n"
+        f"Total Sleep for Today: <b>{total_sleep}</b>\n"
     )
 
 
@@ -377,27 +376,20 @@ def build_last_completed_period_text(state: SleepState) -> str:
         # Build text about last wake window
         wake: Wake = state.last_wake
         duration = format_duration(elapsed_since(wake.start, wake.end))
-        total_duration = format_duration(get_today_total_wake_duration(state))
 
         return (
-            "🌞 <b>Wake Window</b>\n\n"
-            f"<b>{format_time(wake.start)} - {format_time(wake.end)}</b>   ({duration})\n\n"
-            f"Total Wake for Today: <b>{total_duration}</b>\n\n"
+            f"🌞 <b>Wake Window</b>  ({duration})\n\n"
+            f"<b>{format_time(wake.start)} - {format_time(wake.end)}</b>\n\n"
         )
 
     # Awake. Build text about last nap
     nap: Nap = state.last_nap
     duration = format_duration(elapsed_since(nap.start, nap.end))
-    total_duration = format_duration(get_today_total_sleep_duration(state))
 
-    text = (
-        "🌚 <b>Sleep</b>\n\n"
-        f"<b>{format_time(nap.start)} - {format_time(nap.end)}</b>   ({duration})\n\n"
+    return (
+        f"🌚 <b>Sleep</b>   ({duration})\n\n"
+        f"<b>{format_time(nap.start)} - {format_time(nap.end)}</b>\n\n"
     )
-
-    if total_duration != "00:00":
-        text += f"Total Sleep for Today: <b>{total_duration}</b>\n\n"
-    return text
 
 
 # ============================================================
