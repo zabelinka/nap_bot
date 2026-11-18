@@ -672,6 +672,8 @@ async def confirm_sleep(
 
     all_chats = await db.get_linked_chats(chat_id)
     for chat in all_chats:
+        if chat != chat_id:
+            await refresh_sleep_data(chat)
         await show_last_completed_period(chat, context)
     
     chat_state.status_message_id = None
