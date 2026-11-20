@@ -353,16 +353,16 @@ def build_status_text(state: SleepState) -> str:
     total_sleep = format_duration(get_today_total_sleep_duration(state))
 
     if state.is_sleeping:
-        duration = format_duration(elapsed_since(last_nap.start))
+        start_time = last_nap.start
         title = "😴 <b>SLEEPING</b>"
     else:
-        duration = format_duration(elapsed_since(last_nap.end))
+        start_time = last_nap.end
         title = "😜 <b>AWAKE</b>"
 
     return (
         f"{title}\n\n"
-        f"Since: <b>{format_time(last_nap.start)}</b>\n"
-        f"Duration: <b>{duration}</b>\n\n"
+        f"Since: <b>{format_time(start_time)}</b>\n"
+        f"Duration: <b>{format_duration(elapsed_since(start_time))}</b>\n\n"
         f"Total Wake for Today: <b>{total_wake}</b>\n"
         f"Total Sleep for Today: <b>{total_sleep}</b>\n"
     )
